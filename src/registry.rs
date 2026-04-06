@@ -38,8 +38,15 @@ const CLSID_STR: &str = "{0F4F5659-D383-4945-A534-01E1EED1D23F}";
 /// `.<ext>\ShellEx\<this IID>` to find the thumbnail handler.
 const IID_ITHUMBNAILPROVIDER: &str = "{E357FCCD-A995-4576-B01F-234630154E96}";
 
-/// File extensions that ArcThumb handles in Phase 1.
-const EXTENSIONS: &[&str] = &[".zip"];
+/// File extensions that ArcThumb handles.
+/// The `.cb?` variants are the comic-book archive conventions used by
+/// tools like ComicRack — they are structurally identical to their
+/// base format, just with a different extension.
+const EXTENSIONS: &[&str] = &[
+    ".zip", ".cbz",
+    ".rar", ".cbr",
+    ".7z", ".cb7",
+];
 
 /// Resolve our own DLL path by asking Windows "what module is this
 /// function address inside of?" — avoids needing a `DllMain`.
