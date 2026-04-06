@@ -15,10 +15,19 @@
 use std::error::Error;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+use crate::limits;
 
 /// Image extensions we recognise inside archives. Case-insensitive.
+/// Must match what `decode::decode_with_limits` can actually handle —
+/// listing an extension we can't decode would cause us to pick an
+/// unreadable file as the "first image" and fail to produce a
+/// thumbnail at all.
 const IMAGE_EXTS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "avif", "ico",
+    "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "ico",
+    #[cfg(feature = "jxl")]
+    "jxl",
 ];
 
 fn has_image_ext(name: &str) -> bool {
@@ -71,6 +80,16 @@ fn detect_format(magic: &[u8]) -> Format {
 pub fn read_first_image<R: Read + Seek>(
     mut reader: R,
 ) -> Result<(String, Vec<u8>), Box<dyn Error>> {
+    // Size guard: check total stream length before touching any parser.
+    let total = reader.seek(SeekFrom::End(0))?;
+    if total > limits::MAX_ARCHIVE_SIZE {
+        return Err(format!(
+            "archive too large ({total} bytes > {} limit)",
+            limits::MAX_ARCHIVE_SIZE
+        )
+        .into());
+    }
+
     // Read enough of the header for the `ustar` magic at offset 257.
     // `Read::read` may return short; `take().read_to_end()` is the
     // idiomatic "read up to N bytes greedily" pattern.
@@ -98,10 +117,13 @@ fn zip_read_first_image<R: Read + Seek>(
     reader.seek(SeekFrom::Start(0))?;
     let mut archive = zip::ZipArchive::new(reader)?;
 
+    // Collect image candidates that also fit under the per-entry size
+    // cap. Oversized entries are skipped, not an error — maybe a
+    // smaller sibling is usable.
     let mut names: Vec<String> = (0..archive.len())
         .filter_map(|i| {
             let f = archive.by_index(i).ok()?;
-            if f.is_file() && has_image_ext(f.name()) {
+            if f.is_file() && has_image_ext(f.name()) && f.size() <= limits::MAX_ENTRY_SIZE {
                 Some(f.name().to_string())
             } else {
                 None
@@ -113,7 +135,7 @@ fn zip_read_first_image<R: Read + Seek>(
     let name = names
         .into_iter()
         .next()
-        .ok_or("archive contains no image files")?;
+        .ok_or("archive contains no (small enough) image files")?;
 
     let mut file = archive.by_name(&name)?;
     let mut buf = Vec::with_capacity(file.size() as usize);
@@ -143,10 +165,14 @@ fn sevenz_read_first_image<R: Read + Seek>(
         .archive()
         .files
         .iter()
-        .filter(|f| !f.is_directory() && has_image_ext(&f.name))
+        .filter(|f| {
+            !f.is_directory()
+                && has_image_ext(&f.name)
+                && f.size <= limits::MAX_ENTRY_SIZE
+        })
         .map(|f| f.name.clone())
         .min()
-        .ok_or("archive contains no image files")?;
+        .ok_or("archive contains no (small enough) image files")?;
 
     // Second phase: stream through entries until we reach the target,
     // buffer it, then stop.
@@ -175,6 +201,10 @@ fn sevenz_read_first_image<R: Read + Seek>(
 fn rar_read_first_image<R: Read>(
     mut reader: R,
 ) -> Result<(String, Vec<u8>), Box<dyn Error>> {
+    // Opportunistic cleanup of orphaned temp files from previous runs
+    // where Explorer may have crashed mid-extraction.
+    cleanup_stale_temp_files();
+
     let temp_path = make_temp_path("rar");
     // RAII: always delete the temp file when this function returns.
     struct TempGuard(PathBuf);
@@ -200,6 +230,9 @@ fn rar_read_first_image<R: Read>(
         .filter_map(|entry| {
             let e = entry.ok()?;
             if e.is_directory() {
+                return None;
+            }
+            if e.unpacked_size > limits::MAX_ENTRY_SIZE {
                 return None;
             }
             let name = e.filename.to_string_lossy().into_owned();
@@ -249,6 +282,9 @@ fn tar_read_first_image<R: Read + Seek>(
             if !entry.header().entry_type().is_file() {
                 continue;
             }
+            if entry.size() > limits::MAX_ENTRY_SIZE {
+                continue;
+            }
             let path = entry.path()?;
             let name = path.to_string_lossy().into_owned();
             if has_image_ext(&name) {
@@ -258,7 +294,7 @@ fn tar_read_first_image<R: Read + Seek>(
         names
             .into_iter()
             .min()
-            .ok_or("archive contains no image files")?
+            .ok_or("archive contains no (small enough) image files")?
     };
 
     // Pass 2: walk again, extract the target.
@@ -283,10 +319,47 @@ fn tar_read_first_image<R: Read + Seek>(
 /// between concurrent Explorer threads.
 fn make_temp_path(ext: &str) -> PathBuf {
     let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let name = format!("arcthumb_{pid}_{nanos}.{ext}");
     Path::new(&std::env::temp_dir()).join(name)
+}
+
+/// Delete `arcthumb_*` temp files older than `TEMP_FILE_MAX_AGE_SECS`.
+///
+/// Normally the `TempGuard` RAII in `rar_read_first_image` cleans up
+/// after itself. But if Explorer is killed (task manager, crash)
+/// mid-extraction, the temp file leaks. This function sweeps those
+/// up on the next RAR thumbnail request — best-effort, all errors
+/// are silently ignored.
+fn cleanup_stale_temp_files() {
+    let temp_dir = std::env::temp_dir();
+    let now = SystemTime::now();
+    let max_age = Duration::from_secs(limits::TEMP_FILE_MAX_AGE_SECS);
+
+    let Ok(entries) = std::fs::read_dir(&temp_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name_str) = file_name.to_str() else {
+            continue;
+        };
+        if !name_str.starts_with("arcthumb_") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if let Ok(age) = now.duration_since(modified) {
+            if age > max_age {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
 }

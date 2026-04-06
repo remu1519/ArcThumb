@@ -10,6 +10,15 @@ readme = "README.md"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = []
+# JPEG XL decoding via the pure-Rust jxl-oxide crate.
+# Disabled by default because it adds ~2.3 MB to the DLL
+# (jxl-oxide pulls in rayon, tracing, brotli-decompressor, etc.)
+# for a format that is not yet widely deployed.
+# Enable with: cargo build --release --features jxl
+jxl = ["dep:jxl-oxide"]
+
 [dependencies]
 windows-core = "0.58"
 windows = { version = "0.58", features = [
@@ -30,6 +39,7 @@ tar = "0.4"
 image = { version = "0.25", default-features = false, features = [
     "jpeg", "png", "gif", "bmp", "tiff", "ico", "webp",
 ] }
+jxl-oxide = { version = "0.11", features = ["image"], optional = true }
 
 [profile.release]
 lto = true

@@ -27,24 +27,30 @@ use windows::Win32::UI::Shell::{
     IThumbnailProvider, IThumbnailProvider_Impl, WTSAT_ARGB, WTS_ALPHATYPE,
 };
 
-use crate::{alog, archive, bitmap, stream::ComStreamReader};
+use crate::{alog, archive, bitmap, decode, limits, stream::ComStreamReader};
 
-/// End-to-end: stream → ZIP → first image bytes → decode → resize → HBITMAP.
+/// End-to-end: stream → archive → first image bytes → decode → resize → HBITMAP.
 ///
-/// Any failure falls through as an `Err`; the caller (`GetThumbnail`)
-/// logs it and draws a red fallback so the user can see that *something*
-/// went wrong without Explorer showing a broken icon.
-fn try_generate_thumbnail(stream: IStream, cx: u32) -> std::result::Result<HBITMAP, Box<dyn StdError>> {
+/// Any failure propagates as `Err`; the caller logs it and returns
+/// `E_FAIL` so Explorer falls back to the default icon.
+fn try_generate_thumbnail(
+    stream: IStream,
+    cx: u32,
+) -> std::result::Result<HBITMAP, Box<dyn StdError>> {
     let reader = ComStreamReader::new(stream);
     let (name, bytes) = archive::read_first_image(reader)?;
     alog!("  picked: {name} ({} bytes)", bytes.len());
 
-    let img = image::load_from_memory(&bytes)?;
+    // Format-dispatching decoder with pre-decode size guards against
+    // decompression bombs.
+    let img = decode::decode_with_limits(&name, &bytes)?;
     alog!("  decoded: {}x{}", img.width(), img.height());
 
     // Preserve aspect ratio, fit inside cx × cx. `Triangle` (bilinear)
     // is a good default — fast and visually fine at thumbnail sizes.
-    let resized = img.resize(cx, cx, image::imageops::FilterType::Triangle).to_rgba8();
+    let resized = img
+        .resize(cx, cx, image::imageops::FilterType::Triangle)
+        .to_rgba8();
     alog!("  resized: {}x{}", resized.width(), resized.height());
 
     let hbmp = bitmap::from_rgba(&resized)?;
@@ -111,13 +117,47 @@ pub struct ArcThumbProvider {
 
 impl IInitializeWithStream_Impl for ArcThumbProvider_Impl {
     fn Initialize(&self, pstream: Option<&IStream>, _grfmode: u32) -> Result<()> {
-        *self.this.stream.borrow_mut() = pstream.cloned();
-        Ok(())
+        // Initialize is trivial but we still guard it: the #[implement]
+        // glue calls it across the COM ABI, so a panic here would be UB.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            *self.this.stream.borrow_mut() = pstream.cloned();
+            Ok(())
+        }));
+        match result {
+            Ok(r) => r,
+            Err(_) => {
+                alog!("PANIC caught in Initialize");
+                Err(windows::core::Error::from_hresult(E_FAIL))
+            }
+        }
     }
 }
 
 impl IThumbnailProvider_Impl for ArcThumbProvider_Impl {
     fn GetThumbnail(
+        &self,
+        cx: u32,
+        phbmp: *mut HBITMAP,
+        pdwalpha: *mut WTS_ALPHATYPE,
+    ) -> Result<()> {
+        // catch_unwind turns any panic inside our code (image decoder,
+        // archive parser, allocator, …) into a clean COM error instead
+        // of undefined behaviour across the C ABI boundary.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.get_thumbnail_inner(cx, phbmp, pdwalpha)
+        }));
+        match result {
+            Ok(r) => r,
+            Err(_) => {
+                alog!("PANIC caught in GetThumbnail");
+                Err(windows::core::Error::from_hresult(E_FAIL))
+            }
+        }
+    }
+}
+
+impl ArcThumbProvider_Impl {
+    fn get_thumbnail_inner(
         &self,
         cx: u32,
         phbmp: *mut HBITMAP,
@@ -129,9 +169,10 @@ impl IThumbnailProvider_Impl for ArcThumbProvider_Impl {
 
         alog!("---- GetThumbnail cx={cx} ----");
 
-        // Clamp to a sane range so malicious or weird requests can't
-        // make us allocate gigabytes.
-        let size = cx.clamp(16, 1024);
+        // Clamp to Windows's standard icon range. Explorer's largest
+        // bucket is 2560 (Extra Large × high DPI); the lower bound is
+        // defensive.
+        let size = cx.clamp(limits::MIN_THUMBNAIL_SIZE, limits::MAX_THUMBNAIL_SIZE);
 
         let stream = self.this.stream.borrow().clone().ok_or_else(|| {
             alog!("  no stream attached");

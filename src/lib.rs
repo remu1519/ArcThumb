@@ -9,9 +9,13 @@
 mod archive;
 mod bitmap;
 mod com;
+mod decode;
+mod limits;
 mod log;
 mod registry;
 mod stream;
+
+use std::panic::catch_unwind;
 
 use windows::core::{Interface, GUID, HRESULT};
 use windows::Win32::Foundation::{E_FAIL, E_POINTER, S_FALSE, S_OK};
@@ -21,6 +25,21 @@ pub use com::CLSID_ARCTHUMB_PROVIDER;
 
 /// COM error: "no class factory for the requested CLSID".
 const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x80040111u32 as i32);
+
+/// Catch any panic inside `f` and turn it into `E_FAIL`.
+///
+/// Rust panics propagating across `extern "system"` are undefined
+/// behaviour — on Windows they'd crash Explorer. Every COM entry
+/// point in this DLL funnels through this helper.
+fn guard<F: FnOnce() -> HRESULT + std::panic::UnwindSafe>(f: F) -> HRESULT {
+    match catch_unwind(f) {
+        Ok(hr) => hr,
+        Err(_) => {
+            crate::log::log("PANIC caught at DLL entry point");
+            E_FAIL
+        }
+    }
+}
 
 /// Called by COM when a client asks this DLL for a class factory.
 ///
@@ -33,16 +52,18 @@ pub extern "system" fn DllGetClassObject(
     riid: *const GUID,
     ppv: *mut *mut core::ffi::c_void,
 ) -> HRESULT {
-    if rclsid.is_null() || riid.is_null() || ppv.is_null() {
-        return E_POINTER;
-    }
-    unsafe {
-        if *rclsid != CLSID_ARCTHUMB_PROVIDER {
-            return CLASS_E_CLASSNOTAVAILABLE;
+    guard(|| {
+        if rclsid.is_null() || riid.is_null() || ppv.is_null() {
+            return E_POINTER;
         }
-        let factory: IClassFactory = com::ArcThumbClassFactory.into();
-        factory.query(&*riid, ppv)
-    }
+        unsafe {
+            if *rclsid != CLSID_ARCTHUMB_PROVIDER {
+                return CLASS_E_CLASSNOTAVAILABLE;
+            }
+            let factory: IClassFactory = com::ArcThumbClassFactory.into();
+            factory.query(&*riid, ppv)
+        }
+    })
 }
 
 /// Called by COM to ask whether this DLL can be unloaded.
@@ -53,23 +74,23 @@ pub extern "system" fn DllGetClassObject(
 /// or when the DLL idle timer fires.
 #[unsafe(no_mangle)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
-    S_FALSE
+    guard(|| S_FALSE)
 }
 
 /// Called by `regsvr32 arcthumb.dll`.
 #[unsafe(no_mangle)]
 pub extern "system" fn DllRegisterServer() -> HRESULT {
-    match registry::register() {
+    guard(|| match registry::register() {
         Ok(()) => S_OK,
         Err(_) => E_FAIL,
-    }
+    })
 }
 
 /// Called by `regsvr32 /u arcthumb.dll`.
 #[unsafe(no_mangle)]
 pub extern "system" fn DllUnregisterServer() -> HRESULT {
-    match registry::unregister() {
+    guard(|| match registry::unregister() {
         Ok(()) => S_OK,
         Err(_) => E_FAIL,
-    }
+    })
 }
