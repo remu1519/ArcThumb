@@ -17,7 +17,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use crate::limits;
+use crate::{limits, settings};
 
 /// Image extensions we recognise inside archives. Case-insensitive.
 /// Must match what `decode::decode_with_limits` can actually handle —
@@ -120,7 +120,7 @@ fn zip_read_first_image<R: Read + Seek>(
     // Collect image candidates that also fit under the per-entry size
     // cap. Oversized entries are skipped, not an error — maybe a
     // smaller sibling is usable.
-    let mut names: Vec<String> = (0..archive.len())
+    let candidates: Vec<String> = (0..archive.len())
         .filter_map(|i| {
             let f = archive.by_index(i).ok()?;
             if f.is_file() && has_image_ext(f.name()) && f.size() <= limits::MAX_ENTRY_SIZE {
@@ -130,11 +130,8 @@ fn zip_read_first_image<R: Read + Seek>(
             }
         })
         .collect();
-    names.sort();
 
-    let name = names
-        .into_iter()
-        .next()
+    let name = settings::pick_first_image(candidates)
         .ok_or("archive contains no (small enough) image files")?;
 
     let mut file = archive.by_name(&name)?;
@@ -161,7 +158,7 @@ fn sevenz_read_first_image<R: Read + Seek>(
     // The 7z metadata lives in the footer, which SevenZReader::new has
     // already parsed — so we can list all entry names without reading
     // any compressed data.
-    let target: String = sz
+    let candidates: Vec<String> = sz
         .archive()
         .files
         .iter()
@@ -171,7 +168,8 @@ fn sevenz_read_first_image<R: Read + Seek>(
                 && f.size <= limits::MAX_ENTRY_SIZE
         })
         .map(|f| f.name.clone())
-        .min()
+        .collect();
+    let target = settings::pick_first_image(candidates)
         .ok_or("archive contains no (small enough) image files")?;
 
     // Second phase: stream through entries until we reach the target,
@@ -224,8 +222,8 @@ fn rar_read_first_image<R: Read>(
 
     use unrar::Archive;
 
-    // Pass 1: list entries, collect image names, sort, take first.
-    let mut names: Vec<String> = Archive::new(&temp_path)
+    // Pass 1: list entries, collect image names, apply user sort + cover pick.
+    let candidates: Vec<String> = Archive::new(&temp_path)
         .open_for_listing()?
         .filter_map(|entry| {
             let e = entry.ok()?;
@@ -243,10 +241,7 @@ fn rar_read_first_image<R: Read>(
             }
         })
         .collect();
-    names.sort();
-    let target = names
-        .into_iter()
-        .next()
+    let target = settings::pick_first_image(candidates)
         .ok_or("archive contains no image files")?;
 
     // Pass 2: walk the archive again with read access, extract the target.
@@ -276,7 +271,7 @@ fn tar_read_first_image<R: Read + Seek>(
     let target: String = {
         reader.seek(SeekFrom::Start(0))?;
         let mut archive = tar::Archive::new(&mut reader);
-        let mut names: Vec<String> = Vec::new();
+        let mut candidates: Vec<String> = Vec::new();
         for entry in archive.entries()? {
             let entry = entry?;
             if !entry.header().entry_type().is_file() {
@@ -288,12 +283,10 @@ fn tar_read_first_image<R: Read + Seek>(
             let path = entry.path()?;
             let name = path.to_string_lossy().into_owned();
             if has_image_ext(&name) {
-                names.push(name);
+                candidates.push(name);
             }
         }
-        names
-            .into_iter()
-            .min()
+        settings::pick_first_image(candidates)
             .ok_or("archive contains no (small enough) image files")?
     };
 

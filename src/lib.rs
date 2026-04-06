@@ -13,6 +13,7 @@ mod decode;
 mod limits;
 mod log;
 mod registry;
+mod settings;
 mod stream;
 
 use std::panic::catch_unwind;
