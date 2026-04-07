@@ -10,6 +10,7 @@ mod archive;
 mod bitmap;
 mod com;
 mod decode;
+mod ebook;
 mod limits;
 mod log;
 pub mod registry;

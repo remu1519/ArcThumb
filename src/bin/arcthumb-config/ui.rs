@@ -55,8 +55,8 @@ fn s() -> &'static Strings {
 //   y=10   [Enabled extensions]   ← label at (22, 10), size (150, 16)
 //   y=18             +------------------------------...+   ← frame top
 //                    |                                  |
-//   y=38             | [x] .zip  [x] .cbz  [x] .rar     |
-//   y=66             | [x] .7z   [x] .cb7  [x] .cbt     |
+//   y=38             | [x] .zip [x] .cbz [x] .rar [x] .cbr  |
+//   y=66             | [x] .7z  [x] .cb7 [x] .cbt [x] .epub |
 //                    +------------------------------...+   ← frame bottom y=100
 //   y=112  [Sort order]
 //   y=120            +--------------------+
@@ -111,6 +111,8 @@ pub struct ConfigApp {
     cb_cb7: nwg::CheckBox,
     #[nwg_control(parent: ext_frame, text: ".cbt", size: (96, 22), position: (214, 44))]
     cb_cbt: nwg::CheckBox,
+    #[nwg_control(parent: ext_frame, text: ".epub", size: (96, 22), position: (314, 44))]
+    cb_epub: nwg::CheckBox,
 
     // ------------------------------------------------------------------
     // Sort order group
@@ -245,6 +247,7 @@ impl ConfigApp {
             &self.cb_7z,
             &self.cb_cb7,
             &self.cb_cbt,
+            &self.cb_epub,
         ]
     }
 

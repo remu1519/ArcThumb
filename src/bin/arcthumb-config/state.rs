@@ -7,7 +7,7 @@ use arcthumb::settings::Settings;
 
 /// Number of extensions ArcThumb can manage. Must match the length
 /// of `registry::EXTENSIONS`.
-pub const EXT_COUNT: usize = 7;
+pub const EXT_COUNT: usize = 8;
 
 /// Settings + per-extension enable state. No "is the shell extension
 /// installed?" tracking here — installation is the installer's job,

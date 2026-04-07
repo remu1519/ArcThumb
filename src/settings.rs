@@ -222,6 +222,63 @@ mod tests {
     }
 
     #[test]
+    fn natural_sort_leading_zeros() {
+        // Leading zeros should not affect numeric ordering: 02 == 2.
+        // After stripping zeros, equal-magnitude numbers fall back to
+        // continuing past the run, so "page02.jpg" and "page2.jpg"
+        // resolve by the rest of the string (here, identical → equal).
+        let mut v = vec!["page002.jpg", "page1.jpg", "page03.jpg"];
+        v.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(v, vec!["page1.jpg", "page002.jpg", "page03.jpg"]);
+    }
+
+    #[test]
+    fn natural_sort_case_insensitive() {
+        let mut v = vec!["B.jpg", "a.jpg", "C.jpg"];
+        v.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(v, vec!["a.jpg", "B.jpg", "C.jpg"]);
+    }
+
+    #[test]
+    fn natural_sort_mixed_text_and_numbers() {
+        let mut v = vec![
+            "ch10_page2.jpg",
+            "ch2_page10.jpg",
+            "ch10_page1.jpg",
+            "ch2_page2.jpg",
+        ];
+        v.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(
+            v,
+            vec![
+                "ch2_page2.jpg",
+                "ch2_page10.jpg",
+                "ch10_page1.jpg",
+                "ch10_page2.jpg",
+            ]
+        );
+    }
+
+    #[test]
+    fn natural_sort_equal_strings() {
+        assert_eq!(natural_cmp("page01.jpg", "page01.jpg"), Ordering::Equal);
+    }
+
+    #[test]
+    fn natural_sort_one_is_prefix() {
+        // Shorter string compares less when it is a prefix of the other.
+        assert_eq!(natural_cmp("page1", "page1.jpg"), Ordering::Less);
+    }
+
+    #[test]
+    fn strip_leading_zeros_basic() {
+        assert_eq!(strip_leading_zeros(b"0042"), b"42");
+        assert_eq!(strip_leading_zeros(b"42"), b"42");
+        assert_eq!(strip_leading_zeros(b"0000"), b"");
+        assert_eq!(strip_leading_zeros(b""), b"");
+    }
+
+    #[test]
     fn cover_name_detection() {
         assert!(is_cover_name("cover.jpg"));
         assert!(is_cover_name("Cover.PNG"));
@@ -233,6 +290,32 @@ mod tests {
     }
 
     #[test]
+    fn cover_name_handles_both_separators() {
+        // Archive entries can use either / or \ depending on origin.
+        assert!(is_cover_name("a/b/cover.jpg"));
+        assert!(is_cover_name("a\\b\\cover.jpg"));
+        assert!(is_cover_name("a/b\\cover.jpg"));
+    }
+
+    #[test]
+    fn cover_name_no_extension() {
+        assert!(is_cover_name("cover"));
+        assert!(is_cover_name("FOLDER"));
+        assert!(!is_cover_name("page1"));
+    }
+
+    #[test]
+    fn cover_name_all_aliases() {
+        for stem in &["cover", "folder", "thumb", "thumbnail", "front"] {
+            assert!(is_cover_name(&format!("{stem}.jpg")), "stem={stem}");
+            assert!(
+                is_cover_name(&format!("{}.jpg", stem.to_uppercase())),
+                "uppercase stem={stem}"
+            );
+        }
+    }
+
+    #[test]
     fn cover_wins_over_sort() {
         let names = vec![
             "aaa.jpg".to_string(),
@@ -241,5 +324,50 @@ mod tests {
         ];
         // With default settings (cover priority on), cover wins.
         assert_eq!(pick_first_image(names), Some("cover.jpg".to_string()));
+    }
+
+    #[test]
+    fn pick_first_image_empty() {
+        assert_eq!(pick_first_image(vec![]), None);
+    }
+
+    #[test]
+    fn sort_order_parse_aliases() {
+        assert_eq!(
+            SortOrder::from_registry_value("alphabetical"),
+            Some(SortOrder::Alphabetical)
+        );
+        assert_eq!(
+            SortOrder::from_registry_value("ALPHA"),
+            Some(SortOrder::Alphabetical)
+        );
+        assert_eq!(
+            SortOrder::from_registry_value("Natural"),
+            Some(SortOrder::Natural)
+        );
+        assert_eq!(
+            SortOrder::from_registry_value("NAT"),
+            Some(SortOrder::Natural)
+        );
+        assert_eq!(SortOrder::from_registry_value("garbage"), None);
+        assert_eq!(SortOrder::from_registry_value(""), None);
+    }
+
+    #[test]
+    fn sort_order_registry_value_roundtrip() {
+        for order in [SortOrder::Alphabetical, SortOrder::Natural] {
+            let s = order.as_registry_value();
+            assert_eq!(SortOrder::from_registry_value(s), Some(order));
+        }
+    }
+
+    #[test]
+    fn settings_default_matches_documented_behaviour() {
+        // The defaults are user-visible (they kick in when the registry
+        // key is missing) so a regression here would silently change
+        // every fresh install.
+        let s = Settings::default();
+        assert_eq!(s.sort_order, SortOrder::Natural);
+        assert!(s.prefer_cover_names);
     }
 }

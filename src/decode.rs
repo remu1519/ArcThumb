@@ -77,3 +77,79 @@ fn decode_jxl(bytes: &[u8]) -> Result<DynamicImage, Box<dyn Error>> {
 
     Ok(DynamicImage::from_decoder(decoder)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{ImageBuffer, Rgba};
+
+    /// Encode a tiny solid-colour image to PNG bytes via the `image`
+    /// crate. Used as a known-good fixture for round-tripping through
+    /// `decode_with_limits`.
+    fn make_png(w: u32, h: u32) -> Vec<u8> {
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(w, h, |_, _| Rgba([10, 20, 30, 255]));
+        let mut out = Vec::new();
+        DynamicImage::ImageRgba8(img)
+            .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    fn make_jpeg(w: u32, h: u32) -> Vec<u8> {
+        let img: ImageBuffer<image::Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(w, h, |_, _| image::Rgb([200, 100, 50]));
+        let mut out = Vec::new();
+        DynamicImage::ImageRgb8(img)
+            .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Jpeg)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn decode_png_roundtrip() {
+        let bytes = make_png(8, 5);
+        let img = decode_with_limits("foo.png", &bytes).expect("decode");
+        assert_eq!(img.width(), 8);
+        assert_eq!(img.height(), 5);
+    }
+
+    #[test]
+    fn decode_jpeg_roundtrip() {
+        let bytes = make_jpeg(16, 9);
+        let img = decode_with_limits("foo.jpg", &bytes).expect("decode");
+        assert_eq!(img.width(), 16);
+        assert_eq!(img.height(), 9);
+    }
+
+    #[test]
+    fn decode_uses_content_not_filename() {
+        // The file is named .jpg but the bytes are PNG. Decoding
+        // should still succeed because the image crate sniffs the
+        // magic bytes rather than trusting the filename.
+        let bytes = make_png(4, 4);
+        let img = decode_with_limits("lying.jpg", &bytes).expect("decode");
+        assert_eq!(img.width(), 4);
+    }
+
+    #[test]
+    fn decode_rejects_garbage() {
+        let bytes = b"this is not an image at all";
+        assert!(decode_with_limits("foo.png", bytes).is_err());
+    }
+
+    #[test]
+    fn decode_rejects_empty() {
+        assert!(decode_with_limits("foo.png", b"").is_err());
+    }
+
+    #[test]
+    fn limits_are_set_from_module_constants() {
+        // Guard against a future refactor that forgets to wire the
+        // image crate's Limits to our `limits` module.
+        let l = make_limits();
+        assert_eq!(l.max_image_width, Some(limits::MAX_IMAGE_DIMENSION));
+        assert_eq!(l.max_image_height, Some(limits::MAX_IMAGE_DIMENSION));
+        assert_eq!(l.max_alloc, Some(limits::MAX_IMAGE_ALLOC));
+    }
+}

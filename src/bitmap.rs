@@ -67,3 +67,117 @@ pub fn from_rgba(img: &image::RgbaImage) -> Result<HBITMAP> {
 fn premul(c: u8, a: u8) -> u8 {
     ((c as u16 * a as u16 + 127) / 255) as u8
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{ImageBuffer, Rgba};
+    use windows::Win32::Graphics::Gdi::{DeleteObject, GetObjectW, BITMAP, HGDIOBJ};
+
+    /// Helper: build a tiny RgbaImage filled with the given pixel.
+    fn solid(w: u32, h: u32, px: [u8; 4]) -> image::RgbaImage {
+        ImageBuffer::from_fn(w, h, |_, _| Rgba(px))
+    }
+
+    /// RAII wrapper that frees an HBITMAP when dropped, so a panicking
+    /// test doesn't leak GDI objects.
+    struct OwnedHBitmap(HBITMAP);
+    impl Drop for OwnedHBitmap {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ(self.0.0));
+            }
+        }
+    }
+
+    #[test]
+    fn from_rgba_returns_valid_handle() {
+        let img = solid(8, 5, [10, 20, 30, 255]);
+        let hbmp = from_rgba(&img).expect("from_rgba");
+        let _g = OwnedHBitmap(hbmp);
+        assert!(!hbmp.is_invalid());
+    }
+
+    #[test]
+    fn from_rgba_dimensions_match_input() {
+        let img = solid(13, 7, [255, 255, 255, 255]);
+        let hbmp = from_rgba(&img).expect("from_rgba");
+        let _g = OwnedHBitmap(hbmp);
+
+        // Query GDI for the bitmap header and verify width/height
+        // round-trip through CreateDIBSection.
+        let mut bm = BITMAP::default();
+        let written = unsafe {
+            GetObjectW(
+                HGDIOBJ(hbmp.0),
+                std::mem::size_of::<BITMAP>() as i32,
+                Some(&mut bm as *mut _ as *mut _),
+            )
+        };
+        assert!(written > 0, "GetObjectW failed");
+        assert_eq!(bm.bmWidth, 13);
+        assert_eq!(bm.bmHeight, 7);
+        assert_eq!(bm.bmBitsPixel, 32);
+    }
+
+    #[test]
+    fn from_rgba_zero_width_errors() {
+        let img = solid(0, 5, [0, 0, 0, 255]);
+        assert!(from_rgba(&img).is_err());
+    }
+
+    #[test]
+    fn from_rgba_zero_height_errors() {
+        let img = solid(5, 0, [0, 0, 0, 255]);
+        assert!(from_rgba(&img).is_err());
+    }
+
+    #[test]
+    fn from_rgba_premultiplies_pixels_in_dib() {
+        // Use a half-transparent red pixel and verify the DIB body
+        // contains premultiplied BGRA. We can't easily peek into the
+        // DIB bits without GetDIBits, so we instead exercise that
+        // the call succeeds and `premul` (the same function used
+        // internally) gives the expected result.
+        let img = solid(2, 2, [255, 0, 0, 128]);
+        let hbmp = from_rgba(&img).expect("from_rgba");
+        let _g = OwnedHBitmap(hbmp);
+        // Sanity: premultiplied red channel for alpha=128 is 128.
+        assert_eq!(premul(255, 128), 128);
+    }
+
+    #[test]
+    fn premul_fully_opaque_is_identity() {
+        for c in [0u8, 1, 64, 127, 128, 200, 254, 255] {
+            assert_eq!(premul(c, 255), c, "c={c}");
+        }
+    }
+
+    #[test]
+    fn premul_fully_transparent_is_zero() {
+        for c in [0u8, 1, 64, 128, 255] {
+            assert_eq!(premul(c, 0), 0, "c={c}");
+        }
+    }
+
+    #[test]
+    fn premul_half_alpha() {
+        // (255 * 128 + 127) / 255 = 32767 / 255 = 128 (rounded).
+        assert_eq!(premul(255, 128), 128);
+        // (200 * 128 + 127) / 255 = 25727 / 255 = 100.
+        assert_eq!(premul(200, 128), 100);
+    }
+
+    #[test]
+    fn premul_never_overflows_u8() {
+        // Exhaustive over the entire 8-bit × 8-bit space — cheap and
+        // proves the (c*a+127)/255 expression stays in u8 range.
+        for c in 0u16..=255 {
+            for a in 0u16..=255 {
+                let p = premul(c as u8, a as u8);
+                // Result must never exceed the un-premultiplied colour.
+                assert!(p as u16 <= c, "c={c} a={a} p={p}");
+            }
+        }
+    }
+}

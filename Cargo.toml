@@ -44,6 +44,10 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 sevenz-rust = "0.6"
 unrar = "0.5"
 tar = "0.4"
+# Streaming XML parser used by the ebook backends (EPUB, FB2). Pure
+# Rust, no allocator surprises, used by widely-deployed crates like
+# `zip` and `sevenz-rust` already so it pulls no new dependencies.
+quick-xml = "0.36"
 image = { version = "0.25", default-features = false, features = [
     "jpeg", "png", "gif", "bmp", "tiff", "ico", "webp",
 ] }
@@ -64,6 +68,26 @@ native-windows-derive = "1.0"
 # resolve `GetWindowSubclass` at process start and the exe won't
 # launch. Applies to both the DLL and the exe; the DLL ignores it.
 embed-resource = "2"
+
+[dev-dependencies]
+# Integration tests need to call Win32 APIs directly (LoadLibrary,
+# GetProcAddress, SHCreateMemStream, GDI cleanup) and to talk to
+# arcthumb.dll across the COM ABI like Explorer would.
+windows-core = "0.58"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+]}
+zip = { version = "2", default-features = false, features = ["deflate"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Used by archive::tests to compute the file/header CRCs needed to
+# hand-craft a minimal RAR4 fixture in-memory (RAR is a proprietary
+# write format, so there is no Rust crate that can produce one).
+crc32fast = "1"
 
 [profile.release]
 lto = true
