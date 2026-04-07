@@ -33,38 +33,23 @@ fn s() -> &'static Strings {
 // Window layout constants (pixels). Tuned for Segoe UI 14px — the
 // default Windows 10/11 property-sheet font.
 //
-// Layout diagram:
-//
-//   +------------------------------- 440 wide ---+
-//   | (10 margin)                                |
-//   |   Enabled extensions [group, 420x80]       |  y=10..90
-//   |   (8 gap)                                  |
-//   |   Sort order [group, 280x70]               |  y=98..168
-//   |   (8 gap)                                  |
-//   |   [x] Prefer cover... [checkbox]           |  y=176..198
-//   |   (12 gap)                                 |
-//   |   [ OK ] [ Cancel ] [ Apply ]              |  y=210..236
-//   |                                            |
-//   +--------------------------------------------+
-//   total height: 268 (client area)
-
 // Layout in detail:
 //
-//   Window: 444 x 276 (client area)
+//   Window: 444 x 304 (client area)
 //
-//   y=10   [Enabled extensions]   ← label at (22, 10), size (150, 16)
+//   y=10   [Enabled extensions]   ← label at (14, 10)
 //   y=18             +------------------------------...+   ← frame top
-//                    |                                  |
-//   y=38             | [x] .zip [x] .cbz [x] .rar [x] .cbr  |
-//   y=66             | [x] .7z  [x] .cb7 [x] .cbt [x] .epub |
-//                    +------------------------------...+   ← frame bottom y=100
-//   y=112  [Sort order]
-//   y=120            +--------------------+
+//   y=34             | [x] .zip [x] .cbz [x] .rar [x] .cbr  |
+//   y=62             | [x] .7z  [x] .cb7 [x] .cbt [x] .epub |
+//   y=90             | [x] .fb2                              |
+//                    +------------------------------...+   ← frame bottom y=130
+//   y=140  [Sort order]
+//   y=148            +--------------------+
 //                    | (o) Natural ...    |
 //                    | ( ) Alphabetical   |
-//                    +--------------------+   ← ends y=192
-//   y=204  [x] Prefer cover ...
-//   y=240  [ OK ] [ Cancel ] [ Apply ]
+//                    +--------------------+   ← ends y=220
+//   y=232  [x] Prefer cover ...
+//   y=268  [ OK ] [ Cancel ] [ Apply ]
 //
 // Group "title labels" overlap the frame's top border. Because a
 // plain nwg::Label inherits the parent window's COLOR_3DFACE
@@ -74,7 +59,7 @@ fn s() -> &'static Strings {
 #[derive(Default, NwgUi)]
 pub struct ConfigApp {
     #[nwg_control(
-        size: (444, 276),
+        size: (444, 304),
         position: (300, 200),
         title: "ArcThumb Configuration",
         flags: "WINDOW|VISIBLE"
@@ -83,9 +68,9 @@ pub struct ConfigApp {
     window: nwg::Window,
 
     // ------------------------------------------------------------------
-    // Extensions group
+    // Extensions group  (3 rows × 4 columns = up to 12 slots)
     // ------------------------------------------------------------------
-    #[nwg_control(size: (424, 84), position: (10, 18), flags: "VISIBLE|BORDER")]
+    #[nwg_control(size: (424, 112), position: (10, 18), flags: "VISIBLE|BORDER")]
     ext_frame: nwg::Frame,
 
     // Title label — positioned AFTER the frame in z-order so it
@@ -113,6 +98,8 @@ pub struct ConfigApp {
     cb_cbt: nwg::CheckBox,
     #[nwg_control(parent: ext_frame, text: ".epub", size: (96, 22), position: (314, 44))]
     cb_epub: nwg::CheckBox,
+    #[nwg_control(parent: ext_frame, text: ".fb2", size: (96, 22), position: (14, 72))]
+    cb_fb2: nwg::CheckBox,
 
     // ------------------------------------------------------------------
     // Sort order group
@@ -120,10 +107,10 @@ pub struct ConfigApp {
     // Same width as ext_frame (424) so the two boxes line up
     // visually in a stack. Radio buttons leave the right side
     // of the frame empty — that's the Windows convention.
-    #[nwg_control(size: (424, 72), position: (10, 120), flags: "VISIBLE|BORDER")]
+    #[nwg_control(size: (424, 72), position: (10, 148), flags: "VISIBLE|BORDER")]
     sort_frame: nwg::Frame,
 
-    #[nwg_control(text: "    Sort order ", size: (84, 16), position: (14, 112))]
+    #[nwg_control(text: "    Sort order ", size: (84, 16), position: (14, 140))]
     sort_title: nwg::Label,
 
     #[nwg_control(
@@ -144,7 +131,7 @@ pub struct ConfigApp {
     #[nwg_control(
         text: "Prefer cover / folder / thumb / thumbnail / front",
         size: (420, 22),
-        position: (14, 204)
+        position: (14, 232)
     )]
     cb_prefer_cover: nwg::CheckBox,
 
@@ -156,15 +143,15 @@ pub struct ConfigApp {
     //     6 px gap       → Cancel right = 346, left = 266
     //     6 px gap       → OK right = 260, left = 180
     // ------------------------------------------------------------------
-    #[nwg_control(text: "OK", size: (80, 26), position: (180, 240))]
+    #[nwg_control(text: "OK", size: (80, 26), position: (180, 268))]
     #[nwg_events( OnButtonClick: [ConfigApp::on_ok] )]
     ok_btn: nwg::Button,
 
-    #[nwg_control(text: "Cancel", size: (80, 26), position: (266, 240))]
+    #[nwg_control(text: "Cancel", size: (80, 26), position: (266, 268))]
     #[nwg_events( OnButtonClick: [ConfigApp::on_cancel] )]
     cancel_btn: nwg::Button,
 
-    #[nwg_control(text: "Apply", size: (80, 26), position: (352, 240))]
+    #[nwg_control(text: "Apply", size: (80, 26), position: (352, 268))]
     #[nwg_events( OnButtonClick: [ConfigApp::on_apply] )]
     apply_btn: nwg::Button,
 
@@ -248,6 +235,7 @@ impl ConfigApp {
             &self.cb_cb7,
             &self.cb_cbt,
             &self.cb_epub,
+            &self.cb_fb2,
         ]
     }
 

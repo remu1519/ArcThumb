@@ -48,6 +48,9 @@ tar = "0.4"
 # Rust, no allocator surprises, used by widely-deployed crates like
 # `zip` and `sevenz-rust` already so it pulls no new dependencies.
 quick-xml = "0.36"
+# Used by the FB2 backend to decode the base64-encoded images that
+# FictionBook embeds inline in the document. Pure Rust, ~25 KB.
+base64 = "0.22"
 image = { version = "0.25", default-features = false, features = [
     "jpeg", "png", "gif", "bmp", "tiff", "ico", "webp",
 ] }

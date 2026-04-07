@@ -43,6 +43,10 @@ enum Format {
     SevenZ,
     Rar,
     Tar,
+    /// FictionBook 2 raw XML. Detected by searching for the literal
+    /// `FictionBook` in the first 512 bytes — XML declarations may
+    /// appear before the root element so we can't anchor at start.
+    Fb2,
     Unknown,
 }
 
@@ -72,6 +76,13 @@ fn detect_format(magic: &[u8]) -> Format {
     // what modern tools (including 7-Zip, tar, bsdtar) produce.
     if magic.len() >= 262 && &magic[257..262] == b"ustar" {
         return Format::Tar;
+    }
+    // FB2: a single XML document with the literal `FictionBook` root
+    // element. The token is unique enough that false positives are
+    // effectively impossible — no other widely-deployed format mentions
+    // `FictionBook` in its first 512 bytes.
+    if magic.windows(11).any(|w| w == b"FictionBook") {
+        return Format::Fb2;
     }
     Format::Unknown
 }
@@ -103,8 +114,59 @@ pub fn read_first_image<R: Read + Seek>(
         Format::SevenZ => sevenz_read_first_image(reader),
         Format::Rar => rar_read_first_image(reader),
         Format::Tar => tar_read_first_image(reader),
+        Format::Fb2 => fb2_read_first_image(reader),
         Format::Unknown => Err("unrecognised archive format".into()),
     }
+}
+
+/// Look for an `.fb2` entry inside an already-opened ZIP archive
+/// (the `.fb2.zip` distribution convention). Returns `None` if no
+/// `.fb2` entry exists or the FB2 cover extraction fails.
+fn try_extract_fb2_from_zip<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+) -> Option<(String, Vec<u8>)> {
+    // First pass: find the first `.fb2` entry's name. We can't hold
+    // a borrow into the archive across the second access so we copy
+    // the name out.
+    let fb2_name: String = (0..archive.len()).find_map(|i| {
+        let f = archive.by_index(i).ok()?;
+        if !f.is_file() {
+            return None;
+        }
+        if !f.name().to_ascii_lowercase().ends_with(".fb2") {
+            return None;
+        }
+        if f.size() > limits::MAX_ENTRY_SIZE {
+            return None;
+        }
+        Some(f.name().to_string())
+    })?;
+
+    // Second pass: extract that entry's bytes and pass to the FB2
+    // cover extractor.
+    let mut entry = archive.by_name(&fb2_name).ok()?;
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut bytes).ok()?;
+    ebook::fb2::try_extract_cover(&bytes)
+}
+
+// =============================================================================
+// FB2 backend (raw XML, not an archive)
+//
+// FB2 is single XML document where images live as base64 inside
+// `<binary>` elements. The actual decoding lives in `ebook::fb2`;
+// this function just slurps the file (already size-checked above)
+// and dispatches.
+// =============================================================================
+
+fn fb2_read_first_image<R: Read + Seek>(
+    mut reader: R,
+) -> Result<(String, Vec<u8>), Box<dyn Error>> {
+    reader.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    ebook::fb2::try_extract_cover(&bytes)
+        .ok_or_else(|| "FB2 has no embedded cover image".into())
 }
 
 // =============================================================================
@@ -124,6 +186,14 @@ fn zip_read_first_image<R: Read + Seek>(
     // still produce a thumbnail. Non-EPUB ZIPs cost essentially
     // nothing here — `by_name` returns immediately when missing.
     if let Some(result) = ebook::epub::try_extract_cover(&mut archive) {
+        return Ok(result);
+    }
+
+    // FB2.zip fast path: many FB2s are distributed wrapped in a ZIP
+    // (the `.fb2.zip` convention). If we find an `.fb2` entry inside
+    // the ZIP, route through the FB2 cover-extraction logic instead
+    // of the generic image scan. Falls through on failure.
+    if let Some(result) = try_extract_fb2_from_zip(&mut archive) {
         return Ok(result);
     }
 
@@ -719,6 +789,126 @@ mod tests {
         out.extend_from_slice(&end);
 
         out
+    }
+
+    // ---------------------------------------------------------------
+    // detect_format: FB2
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn detect_fb2_with_xml_decl() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">"#;
+        assert_eq!(detect_format(xml), Format::Fb2);
+    }
+
+    #[test]
+    fn detect_fb2_without_xml_decl() {
+        // Some FB2s skip the XML declaration. The token check
+        // doesn't care about the prefix.
+        assert_eq!(detect_format(b"<FictionBook>"), Format::Fb2);
+    }
+
+    #[test]
+    fn detect_random_text_xml_is_unknown() {
+        let xml = br#"<?xml version="1.0"?><html><body>not fb2</body></html>"#;
+        assert_eq!(detect_format(xml), Format::Unknown);
+    }
+
+    // ---------------------------------------------------------------
+    // end-to-end: FB2 backend (raw .fb2 file)
+    // ---------------------------------------------------------------
+
+    /// Build a minimal valid FB2 document containing a single
+    /// base64-encoded image binary referenced by the coverpage.
+    fn build_fb2(cover_id: &str, png_bytes: &[u8]) -> Vec<u8> {
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine;
+        let b64 = B64.encode(png_bytes);
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<FictionBook xmlns=\"http://www.gribuser.ru/xml/fictionbook/2.0\" \
+xmlns:l=\"http://www.w3.org/1999/xlink\">\n\
+  <description>\n\
+    <title-info>\n\
+      <coverpage>\n\
+        <image l:href=\"#{cover_id}\"/>\n\
+      </coverpage>\n\
+    </title-info>\n\
+  </description>\n\
+  <body><section><p>book text</p></section></body>\n\
+  <binary id=\"{cover_id}\" content-type=\"image/png\">{b64}</binary>\n\
+</FictionBook>"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn fb2_raw_extracts_cover() {
+        let png = make_tiny_png();
+        let fb2 = build_fb2("cover.png", &png);
+        let (name, bytes) = read_first_image(Cursor::new(fb2)).expect("FB2 read");
+        assert_eq!(name, "cover.png");
+        // Round-trip verification: the decoded base64 must still be
+        // a valid PNG that the image crate can decode.
+        let img = crate::decode::decode_with_limits(&name, &bytes)
+            .expect("decode FB2 cover");
+        assert_eq!(img.width(), 2);
+        assert_eq!(img.height(), 2);
+    }
+
+    #[test]
+    fn fb2_raw_without_cover_errors() {
+        let fb2 = b"<?xml version=\"1.0\"?>\n\
+<FictionBook>\n\
+  <description><title-info><book-title>X</book-title></title-info></description>\n\
+  <body><section><p>text only</p></section></body>\n\
+</FictionBook>";
+        assert!(read_first_image(Cursor::new(fb2.to_vec())).is_err());
+    }
+
+    // ---------------------------------------------------------------
+    // end-to-end: FB2 inside ZIP (`.fb2.zip` distribution variant)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn fb2_inside_zip_is_extracted() {
+        let png = make_tiny_png();
+        let fb2 = build_fb2("c.png", &png);
+        // Wrap the FB2 in a ZIP. The ZIP backend's FB2 fast path
+        // should find the .fb2 entry, decode the cover, and bypass
+        // the generic image scan.
+        let zip = build_zip(&[("book.fb2", &fb2)]);
+        let (name, bytes) = read_first_image(zip).expect("fb2.zip read");
+        assert_eq!(name, "c.png");
+        let img = crate::decode::decode_with_limits(&name, &bytes)
+            .expect("decode fb2.zip cover");
+        assert_eq!(img.width(), 2);
+    }
+
+    #[test]
+    fn fb2_inside_zip_skips_unrelated_zip_images() {
+        // The ZIP also contains an image alongside the FB2. The
+        // FB2 fast path should win — the FB2 cover is more
+        // authoritative than a stray image in the same ZIP.
+        let png = make_tiny_png();
+        let fb2 = build_fb2("inside.png", &png);
+        let zip = build_zip(&[
+            ("book.fb2", &fb2),
+            ("zzz.png", b"not really a png"),
+        ]);
+        let (name, _) = read_first_image(zip).expect("fb2.zip read");
+        assert_eq!(name, "inside.png");
+    }
+
+    #[test]
+    fn zip_without_fb2_or_epub_still_uses_generic_scan() {
+        // Regression: a plain ZIP must still flow through the
+        // existing image scan after the EPUB and FB2 fast paths
+        // both decline.
+        let zip = build_zip(&[("page1.jpg", b"data")]);
+        let (name, _) = read_first_image(zip).expect("plain ZIP read");
+        assert_eq!(name, "page1.jpg");
     }
 
     #[test]
