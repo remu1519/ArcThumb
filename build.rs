@@ -14,6 +14,7 @@ fn main() {
     // Only rerun when the resources change.
     println!("cargo:rerun-if-changed=resources/arcthumb-config.rc");
     println!("cargo:rerun-if-changed=resources/arcthumb-config.manifest");
+    println!("cargo:rerun-if-changed=assets/icon.ico");
 
     // On non-Windows targets this is a no-op so `cargo check` on
     // other platforms still works.

@@ -1,7 +1,19 @@
-// Resource script for arcthumb-config.exe.
+// Resource script for arcthumb-config.exe (and, harmlessly,
+// arcthumb.dll — both link this .res).
 //
-// Resource ID 1, type 24 (RT_MANIFEST) points at the application
-// manifest XML. We don't #include <winresrc.h> so the .rc can be
-// compiled by either rc.exe or llvm-rc without an SDK header path.
-
+// We don't #include <winresrc.h> so the .rc can be compiled by
+// either rc.exe or llvm-rc without an SDK header path. The numeric
+// type IDs are the canonical Win32 values:
+//   24  = RT_MANIFEST  (application manifest)
+//   3   = RT_GROUP_ICON (handled implicitly by the `ICON` directive)
+//
+// Resource ID 1 / type 24: application manifest declaring our
+// dependency on Common Controls v6 (required by native-windows-gui).
 1 24 "arcthumb-config.manifest"
+
+// Resource ID 1, type ICON: the application icon. The first ICON
+// resource (lowest numeric ID) is the one Explorer / the taskbar /
+// the Start menu / Inno Setup all pick up automatically. We point
+// at the multi-resolution .ico file generated from `assets/icon.png`
+// by `examples/make_icon.rs`.
+1 ICON "../assets/icon.ico"

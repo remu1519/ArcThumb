@@ -47,9 +47,13 @@ PrivilegesRequiredOverridesAllowed=dialog
 ; 64-bit Explorer needs a 64-bit shell extension DLL.
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; Show the config exe as the icon in Apps & Features.
+; Show the config exe as the icon in Apps & Features. The exe's
+; embedded icon (resource ID 1, set up by `resources/arcthumb-config.rc`)
+; is what Apps & Features actually displays.
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
+; Icon for the installer .exe itself (`ArcThumb-Setup.exe`).
+SetupIconFile=..\assets\icon.ico
 
 [Languages]
 Name: "english";  MessagesFile: "compiler:Default.isl"
