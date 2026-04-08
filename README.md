@@ -8,6 +8,8 @@ A Windows Explorer shell extension that shows cover thumbnails and preview-pane 
 
 ArcThumb is inspired by [CBX Shell](https://www.t800productions.com/) and [DarkThumbs](http://thumbs.kaioa.com/), rewritten in Rust with WebP support and Windows 10/11 as the baseline.
 
+![Explorer showing ArcThumb-generated thumbnails for comic archives and EPUB files](assets/explorer.png)
+
 ## What it does
 
 - Shows the first image (or the cover, if one is identifiable) from an archive as the file's thumbnail in Explorer.
@@ -44,6 +46,8 @@ To uninstall, use **Settings → Apps → Installed apps**, find `ArcThumb`, and
 ## Configuration
 
 Open **ArcThumb Configuration** from the Start menu.
+
+![ArcThumb Configuration dialog with extension toggles, sort order, cover preference and the Regenerate thumbnails button](assets/screenshot.png)
 
 - **Enabled extensions** turns the thumbnail provider on or off per file extension.
 - **Sort order** decides which image counts as "the first one" inside an archive. Natural sort treats `page2.jpg` as smaller than `page10.jpg`. Alphabetical does the opposite. Natural is the default and is usually what you want for comics.
