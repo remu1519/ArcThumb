@@ -40,6 +40,10 @@ use windows::core::PCWSTR;
 use winreg::RegKey;
 use winreg::enums::*;
 
+// =============================================================================
+// Constants
+// =============================================================================
+
 /// String form of the ArcThumb thumbnail provider CLSID (defined in
 /// `com.rs`). **Never change** — baked into users' registries.
 pub const CLSID_STR: &str = "{0F4F5659-D383-4945-A534-01E1EED1D23F}";
@@ -50,11 +54,11 @@ pub const PREVIEW_CLSID_STR: &str = "{8C7C1E5F-3D4A-4E2B-9F1A-7B5D6E8F9A0C}";
 
 /// Standard IID of `IThumbnailProvider`. Explorer looks under
 /// `.<ext>\ShellEx\<this IID>` to find the thumbnail handler.
-pub const IID_ITHUMBNAILPROVIDER: &str = "{E357FCCD-A995-4576-B01F-234630154E96}";
+const IID_ITHUMBNAILPROVIDER: &str = "{E357FCCD-A995-4576-B01F-234630154E96}";
 
 /// Standard IID of `IPreviewHandler`. Explorer looks under
 /// `.<ext>\ShellEx\<this IID>` to find the preview handler.
-pub const IID_IPREVIEWHANDLER: &str = "{8895B1C6-B41F-4C1C-A562-0D564250836F}";
+const IID_IPREVIEWHANDLER: &str = "{8895B1C6-B41F-4C1C-A562-0D564250836F}";
 
 /// AppID of the standard preview-host surrogate. Setting this on
 /// the CLSID key tells COM to load our DLL inside `prevhost.exe`
@@ -62,111 +66,81 @@ pub const IID_IPREVIEWHANDLER: &str = "{8895B1C6-B41F-4C1C-A562-0D564250836F}";
 const PREVHOST_APPID: &str = "{534A1E02-D58F-44f0-B58B-36CBED287C7C}";
 
 /// File extensions that ArcThumb handles.
-/// The `.cb?` variants are the comic-book archive conventions used by
-/// tools like ComicRack — structurally identical to their base format,
-/// just with a different extension. `.epub` rides the ZIP backend
-/// with an EPUB-aware fast path that consults the OPF metadata for
-/// the cover image. `.fb2` is a raw XML document with base64-embedded
-/// images; the `.fb2.zip` distribution variant is caught implicitly
-/// by the `.zip` registration since Windows only sees the final
-/// extension on a double-suffixed file. `.mobi` / `.azw` / `.azw3`
-/// are Amazon Kindle ebook formats sharing a PalmDB container.
 pub const EXTENSIONS: &[&str] = &[
     ".zip", ".cbz", ".rar", ".cbr", ".7z", ".cb7", ".cbt", ".epub", ".fb2", ".mobi", ".azw",
     ".azw3",
 ];
 
-// =============================================================================
-// Path constants and helpers
-// =============================================================================
-
-/// Production parent key for shell extension registrations. We write
-/// under `HKCU\Software\Classes` (per-user, no admin needed) rather
-/// than `HKLM\Software\Classes` (machine-wide, requires elevation).
+/// Production parent key for shell extension registrations.
 const CLASSES_BASE: &str = "Software\\Classes";
 
-/// Production parent key for COM CLSIDs. Sits under `Software\Classes`
-/// but we name it explicitly so tests can swap in a fake root without
-/// touching the user's real shell registrations.
+/// Production parent key for COM CLSIDs.
 const CLSID_BASE: &str = "Software\\Classes\\CLSID";
 
-/// Build the registry sub-path for a given extension's ShellEx slot,
-/// rooted at `classes_base`. Production callers pass `CLASSES_BASE`;
-/// tests pass a unique sandbox root.
-fn ext_shellex_path_under(classes_base: &str, ext: &str) -> String {
-    format!("{classes_base}\\{ext}\\ShellEx\\{IID_ITHUMBNAILPROVIDER}")
+// =============================================================================
+// HandlerKind — captures the difference between thumbnail and preview
+// =============================================================================
+
+/// Describes one of the two COM handlers ArcThumb registers.
+/// All handler-specific logic is parameterized over this, eliminating
+/// the thumbnail/preview code duplication.
+struct HandlerKind {
+    clsid_str: &'static str,
+    iid_shellex: &'static str,
+    display_name: &'static str,
+    app_id: Option<&'static str>,
 }
 
-/// Build the registry sub-path for the CLSID root, rooted at
-/// `clsid_base`. Production callers pass `CLSID_BASE`.
+const THUMBNAIL: HandlerKind = HandlerKind {
+    clsid_str: CLSID_STR,
+    iid_shellex: IID_ITHUMBNAILPROVIDER,
+    display_name: "ArcThumb Thumbnail Provider",
+    app_id: None,
+};
+
+const PREVIEW: HandlerKind = HandlerKind {
+    clsid_str: PREVIEW_CLSID_STR,
+    iid_shellex: IID_IPREVIEWHANDLER,
+    display_name: "ArcThumb Preview Handler",
+    app_id: Some(PREVHOST_APPID),
+};
+
+// =============================================================================
+// Path builders
+// =============================================================================
+
+/// Build the registry sub-path for a given extension's ShellEx slot.
+fn ext_shellex_path_under(classes_base: &str, ext: &str, iid: &str) -> String {
+    format!("{classes_base}\\{ext}\\ShellEx\\{iid}")
+}
+
+/// Build the registry sub-path for the CLSID root.
 fn clsid_root_path_under(clsid_base: &str, clsid_str: &str) -> String {
     format!("{clsid_base}\\{clsid_str}")
 }
 
-/// Production-flavoured wrapper for `ext_shellex_path_under`.
-fn ext_shellex_path(ext: &str) -> String {
-    ext_shellex_path_under(CLASSES_BASE, ext)
-}
+impl HandlerKind {
+    fn clsid_root(&self) -> String {
+        clsid_root_path_under(CLSID_BASE, self.clsid_str)
+    }
 
-/// Production-flavoured wrapper for `clsid_root_path_under`.
-fn clsid_root_path() -> String {
-    clsid_root_path_under(CLSID_BASE, CLSID_STR)
-}
-
-/// Build the registry sub-path for a given extension's preview-handler
-/// ShellEx slot, rooted at `classes_base`.
-fn preview_ext_shellex_path_under(classes_base: &str, ext: &str) -> String {
-    format!("{classes_base}\\{ext}\\ShellEx\\{IID_IPREVIEWHANDLER}")
-}
-
-/// Production-flavoured wrapper for the preview-handler ShellEx slot.
-fn preview_ext_shellex_path(ext: &str) -> String {
-    preview_ext_shellex_path_under(CLASSES_BASE, ext)
-}
-
-/// Production-flavoured wrapper for the preview-handler CLSID root.
-fn preview_clsid_root_path() -> String {
-    clsid_root_path_under(CLSID_BASE, PREVIEW_CLSID_STR)
-}
-
-/// Resolve the calling DLL's own path via `GetModuleHandleExW` — only
-/// meaningful when this code is running inside `arcthumb.dll`. The
-/// config exe must NOT call this; it would return the exe's path.
-fn get_dll_path_from_module() -> io::Result<String> {
-    unsafe {
-        let mut hmodule = HMODULE::default();
-        GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            PCWSTR(get_dll_path_from_module as *const () as *const u16),
-            &mut hmodule,
-        )
-        .map_err(|e| io::Error::other(format!("GetModuleHandleExW failed: {e}")))?;
-
-        let mut buf = vec![0u16; 32768];
-        let len = GetModuleFileNameW(hmodule, &mut buf) as usize;
-        if len == 0 {
-            return Err(io::Error::other("GetModuleFileNameW returned 0"));
-        }
-        Ok(OsString::from_wide(&buf[..len])
-            .to_string_lossy()
-            .into_owned())
+    fn ext_shellex_path(&self, ext: &str) -> String {
+        ext_shellex_path_under(CLASSES_BASE, ext, self.iid_shellex)
     }
 }
 
 // =============================================================================
-// Public primitives (used by both the DLL and the config exe)
+// Registry primitives (parameterized for testability)
 // =============================================================================
 
-// =============================================================================
-// Path-parameterized internals — production functions are thin wrappers,
-// tests pass a sandbox root so they don't touch the real shell extension
-// registration.
-// =============================================================================
-
-fn register_clsid_at(clsid_root: &str, dll_path: &Path) -> io::Result<()> {
+fn register_clsid_at(clsid_root: &str, dll_path: &Path, handler: &HandlerKind) -> io::Result<()> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let (clsid_key, _) = hkcu.create_subkey(clsid_root)?;
-    clsid_key.set_value("", &"ArcThumb Thumbnail Provider")?;
+    clsid_key.set_value("", &handler.display_name)?;
+
+    if let Some(app_id) = handler.app_id {
+        clsid_key.set_value("AppID", &app_id.to_string())?;
+    }
 
     let (inproc, _) = clsid_key.create_subkey("InprocServer32")?;
     let dll_path_str = dll_path.to_string_lossy().into_owned();
@@ -212,96 +186,105 @@ fn read_inproc_default(clsid_root: &str) -> Option<PathBuf> {
     }
 }
 
-/// Like `register_clsid_at`, but additionally writes the `AppID`
-/// value pointing at `prevhost.exe`. Used for the preview handler.
-fn register_preview_clsid_at(clsid_root: &str, dll_path: &Path) -> io::Result<()> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let (clsid_key, _) = hkcu.create_subkey(clsid_root)?;
-    clsid_key.set_value("", &"ArcThumb Preview Handler")?;
-    clsid_key.set_value("AppID", &PREVHOST_APPID.to_string())?;
+/// Resolve the calling DLL's own path via `GetModuleHandleExW` — only
+/// meaningful when this code is running inside `arcthumb.dll`. The
+/// config exe must NOT call this; it would return the exe's path.
+fn get_dll_path_from_module() -> io::Result<String> {
+    unsafe {
+        let mut hmodule = HMODULE::default();
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            PCWSTR(get_dll_path_from_module as *const () as *const u16),
+            &mut hmodule,
+        )
+        .map_err(|e| io::Error::other(format!("GetModuleHandleExW failed: {e}")))?;
 
-    let (inproc, _) = clsid_key.create_subkey("InprocServer32")?;
-    let dll_path_str = dll_path.to_string_lossy().into_owned();
-    inproc.set_value("", &dll_path_str)?;
-    inproc.set_value("ThreadingModel", &"Apartment")?;
-    Ok(())
+        let mut buf = vec![0u16; 32768];
+        let len = GetModuleFileNameW(hmodule, &mut buf) as usize;
+        if len == 0 {
+            return Err(io::Error::other("GetModuleFileNameW returned 0"));
+        }
+        Ok(OsString::from_wide(&buf[..len])
+            .to_string_lossy()
+            .into_owned())
+    }
 }
 
 // =============================================================================
-// Public production API
+// Public API — thumbnail provider
 // =============================================================================
 
 /// Write the CLSID subtree (`HKCU\Software\Classes\CLSID\{CLSID}`)
 /// including the `InprocServer32` entry pointing at `dll_path`.
 pub fn register_clsid(dll_path: &Path) -> io::Result<()> {
-    register_clsid_at(&clsid_root_path(), dll_path)
+    register_clsid_at(&THUMBNAIL.clsid_root(), dll_path, &THUMBNAIL)
 }
 
 /// Delete the CLSID subtree. Best effort: succeeds even if the tree
 /// was already absent.
 pub fn unregister_clsid() -> io::Result<()> {
-    unregister_clsid_at(&clsid_root_path())
+    unregister_clsid_at(&THUMBNAIL.clsid_root())
 }
 
 /// Wire a single file extension to our CLSID in the ShellEx slot.
 /// `ext` must start with a dot, e.g. `".zip"`.
 pub fn register_extension(ext: &str) -> io::Result<()> {
-    register_extension_at(&ext_shellex_path(ext), CLSID_STR)
+    register_extension_at(&THUMBNAIL.ext_shellex_path(ext), CLSID_STR)
 }
 
 /// Remove the ShellEx binding for a single extension. No error if
 /// the key is already gone.
 pub fn unregister_extension(ext: &str) -> io::Result<()> {
-    unregister_extension_at(&ext_shellex_path(ext))
+    unregister_extension_at(&THUMBNAIL.ext_shellex_path(ext))
 }
 
 /// True iff the ShellEx IID subkey currently exists for this extension.
 pub fn is_extension_registered(ext: &str) -> bool {
-    is_subkey_present(&ext_shellex_path(ext))
+    is_subkey_present(&THUMBNAIL.ext_shellex_path(ext))
 }
 
 /// True iff the CLSID's `InprocServer32` subkey exists (our canonical
 /// "shell extension is installed" signal).
 pub fn is_clsid_registered() -> bool {
-    is_subkey_present(&format!("{}\\InprocServer32", clsid_root_path()))
+    is_subkey_present(&format!("{}\\InprocServer32", THUMBNAIL.clsid_root()))
 }
 
 /// Read back `HKCU\Software\Classes\CLSID\{CLSID}\InprocServer32\(Default)`.
 /// Used by the config exe as a fallback when the DLL isn't next to it.
 pub fn read_registered_dll_path() -> Option<PathBuf> {
-    read_inproc_default(&clsid_root_path())
+    read_inproc_default(&THUMBNAIL.clsid_root())
 }
 
 // =============================================================================
-// Preview-handler public API
+// Public API — preview handler
 // =============================================================================
 
 /// Write the preview-handler CLSID subtree, including the AppID
 /// pointing at prevhost.exe and the InprocServer32 entry.
 pub fn register_preview_clsid(dll_path: &Path) -> io::Result<()> {
-    register_preview_clsid_at(&preview_clsid_root_path(), dll_path)
+    register_clsid_at(&PREVIEW.clsid_root(), dll_path, &PREVIEW)
 }
 
 /// Delete the preview-handler CLSID subtree. Best effort.
 pub fn unregister_preview_clsid() -> io::Result<()> {
-    unregister_clsid_at(&preview_clsid_root_path())
+    unregister_clsid_at(&PREVIEW.clsid_root())
 }
 
 /// Wire one extension to the preview-handler CLSID via its
 /// `IPreviewHandler` ShellEx slot.
 pub fn register_preview_extension(ext: &str) -> io::Result<()> {
-    register_extension_at(&preview_ext_shellex_path(ext), PREVIEW_CLSID_STR)
+    register_extension_at(&PREVIEW.ext_shellex_path(ext), PREVIEW_CLSID_STR)
 }
 
 /// Remove the preview-handler ShellEx binding for an extension.
 pub fn unregister_preview_extension(ext: &str) -> io::Result<()> {
-    unregister_extension_at(&preview_ext_shellex_path(ext))
+    unregister_extension_at(&PREVIEW.ext_shellex_path(ext))
 }
 
 /// True iff the preview-handler `InprocServer32` subkey exists. Used
 /// as the source of truth for the GUI's "Enable preview pane" toggle.
 pub fn is_preview_enabled() -> bool {
-    is_subkey_present(&format!("{}\\InprocServer32", preview_clsid_root_path()))
+    is_subkey_present(&format!("{}\\InprocServer32", PREVIEW.clsid_root()))
 }
 
 // =============================================================================
@@ -335,25 +318,6 @@ pub fn unregister() -> io::Result<()> {
 /// Tell the Shell that file-type associations changed so it invalidates
 /// its icon and thumbnail caches and picks up our newly registered (or
 /// removed) handlers without a reboot.
-///
-/// Microsoft's [shell-extension registration docs][docs] require this
-/// call after writing or deleting a handler:
-///
-/// > Applications that register new handlers of any type must call
-/// > `SHChangeNotify` with the `SHCNE_ASSOCCHANGED` flag to instruct
-/// > the Shell to invalidate the icon and thumbnail cache.
-///
-/// Without it, Explorer will keep showing whatever it cached before —
-/// including the "this file has no thumbnail" negative result for
-/// archives the user opened before installing ArcThumb. Call this from
-/// every code path that mutates our shell registrations: the DLL's
-/// `register()` / `unregister()`, the config exe's `--install` /
-/// `--uninstall` CLI, and the Apply button in the GUI.
-///
-/// Best-effort: the call has no return value to check, and on the
-/// failure paths there is nothing actionable for the user anyway.
-///
-/// [docs]: https://learn.microsoft.com/en-us/windows/win32/shell/reg-shell-exts
 pub fn notify_assoc_changed() {
     use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
     unsafe {
@@ -361,24 +325,63 @@ pub fn notify_assoc_changed() {
     }
 }
 
+// =============================================================================
+// Tests
+// =============================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // ---------------------------------------------------------------
+    // Path format tests
+    // ---------------------------------------------------------------
+
     #[test]
-    fn extension_path_format() {
+    fn thumbnail_extension_path_format() {
         assert_eq!(
-            ext_shellex_path(".zip"),
+            THUMBNAIL.ext_shellex_path(".zip"),
             "Software\\Classes\\.zip\\ShellEx\\{E357FCCD-A995-4576-B01F-234630154E96}"
         );
     }
 
     #[test]
-    fn clsid_root_format() {
+    fn thumbnail_clsid_root_format() {
         assert_eq!(
-            clsid_root_path(),
+            THUMBNAIL.clsid_root(),
             "Software\\Classes\\CLSID\\{0F4F5659-D383-4945-A534-01E1EED1D23F}"
         );
+    }
+
+    #[test]
+    fn preview_extension_path_format() {
+        assert_eq!(
+            PREVIEW.ext_shellex_path(".zip"),
+            "Software\\Classes\\.zip\\ShellEx\\{8895B1C6-B41F-4C1C-A562-0D564250836F}"
+        );
+    }
+
+    #[test]
+    fn preview_clsid_root_format() {
+        assert_eq!(
+            PREVIEW.clsid_root(),
+            "Software\\Classes\\CLSID\\{8C7C1E5F-3D4A-4E2B-9F1A-7B5D6E8F9A0C}"
+        );
+    }
+
+    #[test]
+    fn ext_shellex_path_under_uses_provided_root() {
+        let p = ext_shellex_path_under("Foo\\Bar", ".zip", IID_ITHUMBNAILPROVIDER);
+        assert_eq!(
+            p,
+            "Foo\\Bar\\.zip\\ShellEx\\{E357FCCD-A995-4576-B01F-234630154E96}"
+        );
+    }
+
+    #[test]
+    fn clsid_root_path_under_uses_provided_root() {
+        let p = clsid_root_path_under("Foo\\CLSID", "{XYZ}");
+        assert_eq!(p, "Foo\\CLSID\\{XYZ}");
     }
 
     #[test]
@@ -391,15 +394,9 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Hermetic registry roundtrips. Each test uses a unique sandbox
-    // root under HKCU so it can't collide with the user's real shell
-    // extension state or with parallel test runs.
+    // Hermetic registry roundtrips
     // ---------------------------------------------------------------
 
-    /// Build a registry sandbox path that is guaranteed unique per
-    /// test invocation. We embed the PID + a high-resolution clock
-    /// reading + a tag, then verify the key doesn't already exist
-    /// before the test writes anything.
     fn unique_sandbox(tag: &str) -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
         let pid = std::process::id();
@@ -410,8 +407,6 @@ mod tests {
         format!("Software\\ArcThumbTest_{tag}_{pid}_{nanos}")
     }
 
-    /// RAII helper that wipes a sandbox subtree on Drop, even if the
-    /// test panics partway through.
     struct SandboxGuard(String);
     impl Drop for SandboxGuard {
         fn drop(&mut self) {
@@ -424,12 +419,10 @@ mod tests {
     fn extension_register_roundtrip() {
         let sandbox = unique_sandbox("ext");
         let _guard = SandboxGuard(sandbox.clone());
-        let path = ext_shellex_path_under(&sandbox, ".zip");
+        let path = ext_shellex_path_under(&sandbox, ".zip", THUMBNAIL.iid_shellex);
 
-        // Pre-condition: the sandbox is empty.
         assert!(!is_subkey_present(&path));
 
-        // Register and verify the value was written.
         register_extension_at(&path, CLSID_STR).expect("register");
         assert!(is_subkey_present(&path));
 
@@ -438,38 +431,72 @@ mod tests {
         let val: String = key.get_value("").expect("read default value");
         assert_eq!(val, CLSID_STR);
 
-        // Unregister and verify the key is gone.
         unregister_extension_at(&path).expect("unregister");
         assert!(!is_subkey_present(&path));
     }
 
     #[test]
-    fn clsid_register_roundtrip() {
-        let sandbox = unique_sandbox("clsid");
+    fn thumbnail_clsid_register_roundtrip() {
+        let sandbox = unique_sandbox("thumb_clsid");
         let _guard = SandboxGuard(sandbox.clone());
-        // The sandbox holds a fake CLSID root so the production CLSID
-        // is never touched.
         let clsid_root = format!("{sandbox}\\{{TEST-CLSID}}");
 
         assert!(!is_subkey_present(&clsid_root));
 
         let dll_path = std::path::PathBuf::from(r"C:\fake\arcthumb.dll");
-        register_clsid_at(&clsid_root, &dll_path).expect("register");
+        register_clsid_at(&clsid_root, &dll_path, &THUMBNAIL).expect("register");
 
-        // InprocServer32 default value should match what we wrote.
         let inproc_path = format!("{clsid_root}\\InprocServer32");
         assert!(is_subkey_present(&inproc_path));
 
         let read_back = read_inproc_default(&clsid_root).expect("read back");
         assert_eq!(read_back, dll_path);
 
-        // ThreadingModel must be Apartment for shell extension hosts.
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let inproc = hkcu.open_subkey(&inproc_path).expect("open inproc");
         let threading: String = inproc
             .get_value("ThreadingModel")
             .expect("read ThreadingModel");
         assert_eq!(threading, "Apartment");
+
+        // Thumbnail handler has no AppID.
+        let clsid_key = hkcu.open_subkey(&clsid_root).expect("open clsid");
+        assert!(
+            clsid_key.get_value::<String, _>("AppID").is_err(),
+            "thumbnail should not have AppID"
+        );
+
+        unregister_clsid_at(&clsid_root).expect("unregister");
+        assert!(!is_subkey_present(&clsid_root));
+    }
+
+    #[test]
+    fn preview_clsid_register_roundtrip() {
+        let sandbox = unique_sandbox("preview_clsid");
+        let _guard = SandboxGuard(sandbox.clone());
+        let clsid_root = format!("{sandbox}\\{{TEST-PREVIEW}}");
+
+        assert!(!is_subkey_present(&clsid_root));
+
+        let dll_path = std::path::PathBuf::from(r"C:\fake\arcthumb.dll");
+        register_clsid_at(&clsid_root, &dll_path, &PREVIEW).expect("register");
+
+        let read_back = read_inproc_default(&clsid_root).expect("read back");
+        assert_eq!(read_back, dll_path);
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let inproc = hkcu
+            .open_subkey(format!("{clsid_root}\\InprocServer32"))
+            .expect("open inproc");
+        let threading: String = inproc
+            .get_value("ThreadingModel")
+            .expect("read ThreadingModel");
+        assert_eq!(threading, "Apartment");
+
+        // Preview handler has AppID pointing at prevhost.exe.
+        let clsid_key = hkcu.open_subkey(&clsid_root).expect("open clsid");
+        let app_id: String = clsid_key.get_value("AppID").expect("read AppID");
+        assert_eq!(app_id, PREVHOST_APPID);
 
         unregister_clsid_at(&clsid_root).expect("unregister");
         assert!(!is_subkey_present(&clsid_root));
@@ -479,8 +506,7 @@ mod tests {
     fn unregister_missing_extension_is_noop() {
         let sandbox = unique_sandbox("missing_ext");
         let _guard = SandboxGuard(sandbox.clone());
-        let path = ext_shellex_path_under(&sandbox, ".doesnotexist");
-        // Deleting a key that was never created must succeed silently.
+        let path = ext_shellex_path_under(&sandbox, ".doesnotexist", THUMBNAIL.iid_shellex);
         unregister_extension_at(&path).expect("noop unregister");
     }
 
@@ -502,105 +528,37 @@ mod tests {
 
     #[test]
     fn full_install_uninstall_for_all_extensions() {
-        // Exercises the EXTENSIONS list against the sandbox so a
-        // future addition (e.g. .epub) is automatically covered.
         let sandbox = unique_sandbox("full");
         let _guard = SandboxGuard(sandbox.clone());
 
-        // Register the fake CLSID + every extension under the sandbox.
-        let clsid_root = format!("{sandbox}\\CLSID\\{CLSID_STR}");
-        register_clsid_at(&clsid_root, std::path::Path::new(r"C:\fake.dll"))
-            .expect("clsid register");
+        for handler in [&THUMBNAIL, &PREVIEW] {
+            let clsid_root = clsid_root_path_under(&sandbox, handler.clsid_str);
+            register_clsid_at(&clsid_root, Path::new(r"C:\fake.dll"), handler)
+                .expect("clsid register");
 
-        for ext in EXTENSIONS {
-            let path = ext_shellex_path_under(&sandbox, ext);
-            register_extension_at(&path, CLSID_STR).expect(ext);
-            assert!(is_subkey_present(&path), "{ext} not present after register");
+            for ext in EXTENSIONS {
+                let path = ext_shellex_path_under(&sandbox, ext, handler.iid_shellex);
+                register_extension_at(&path, handler.clsid_str).expect(ext);
+                assert!(is_subkey_present(&path), "{ext} not present after register");
+            }
+
+            for ext in EXTENSIONS {
+                let path = ext_shellex_path_under(&sandbox, ext, handler.iid_shellex);
+                unregister_extension_at(&path).expect(ext);
+                assert!(
+                    !is_subkey_present(&path),
+                    "{ext} still present after unregister"
+                );
+            }
+            unregister_clsid_at(&clsid_root).expect("clsid unregister");
         }
-
-        // Tear down in reverse order of install (production order).
-        for ext in EXTENSIONS {
-            let path = ext_shellex_path_under(&sandbox, ext);
-            unregister_extension_at(&path).expect(ext);
-            assert!(
-                !is_subkey_present(&path),
-                "{ext} still present after unregister"
-            );
-        }
-        unregister_clsid_at(&clsid_root).expect("clsid unregister");
-    }
-
-    #[test]
-    fn ext_shellex_path_under_uses_provided_root() {
-        let p = ext_shellex_path_under("Foo\\Bar", ".zip");
-        assert_eq!(
-            p,
-            "Foo\\Bar\\.zip\\ShellEx\\{E357FCCD-A995-4576-B01F-234630154E96}"
-        );
-    }
-
-    #[test]
-    fn clsid_root_path_under_uses_provided_root() {
-        let p = clsid_root_path_under("Foo\\CLSID", "{XYZ}");
-        assert_eq!(p, "Foo\\CLSID\\{XYZ}");
-    }
-
-    #[test]
-    fn preview_ext_shellex_path_format() {
-        assert_eq!(
-            preview_ext_shellex_path(".zip"),
-            "Software\\Classes\\.zip\\ShellEx\\{8895B1C6-B41F-4C1C-A562-0D564250836F}"
-        );
-    }
-
-    #[test]
-    fn preview_clsid_root_path_format() {
-        assert_eq!(
-            preview_clsid_root_path(),
-            "Software\\Classes\\CLSID\\{8C7C1E5F-3D4A-4E2B-9F1A-7B5D6E8F9A0C}"
-        );
-    }
-
-    #[test]
-    fn preview_clsid_register_roundtrip() {
-        let sandbox = unique_sandbox("preview_clsid");
-        let _guard = SandboxGuard(sandbox.clone());
-        let clsid_root = format!("{sandbox}\\{{TEST-PREVIEW}}");
-
-        assert!(!is_subkey_present(&clsid_root));
-
-        let dll_path = std::path::PathBuf::from(r"C:\fake\arcthumb.dll");
-        register_preview_clsid_at(&clsid_root, &dll_path).expect("register");
-
-        // InprocServer32 → DLL path round-trips.
-        let read_back = read_inproc_default(&clsid_root).expect("read back");
-        assert_eq!(read_back, dll_path);
-
-        // ThreadingModel = Apartment.
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let inproc = hkcu
-            .open_subkey(format!("{clsid_root}\\InprocServer32"))
-            .expect("open inproc");
-        let threading: String = inproc
-            .get_value("ThreadingModel")
-            .expect("read ThreadingModel");
-        assert_eq!(threading, "Apartment");
-
-        // AppID = the standard prevhost surrogate so the DLL gets
-        // hosted in prevhost.exe instead of inside Explorer.
-        let clsid_key = hkcu.open_subkey(&clsid_root).expect("open clsid");
-        let app_id: String = clsid_key.get_value("AppID").expect("read AppID");
-        assert_eq!(app_id, "{534A1E02-D58F-44f0-B58B-36CBED287C7C}");
-
-        unregister_clsid_at(&clsid_root).expect("unregister");
-        assert!(!is_subkey_present(&clsid_root));
     }
 
     #[test]
     fn preview_extension_register_roundtrip() {
         let sandbox = unique_sandbox("preview_ext");
         let _guard = SandboxGuard(sandbox.clone());
-        let path = preview_ext_shellex_path_under(&sandbox, ".epub");
+        let path = ext_shellex_path_under(&sandbox, ".epub", PREVIEW.iid_shellex);
 
         assert!(!is_subkey_present(&path));
 
@@ -614,42 +572,5 @@ mod tests {
 
         unregister_extension_at(&path).expect("unregister");
         assert!(!is_subkey_present(&path));
-    }
-
-    #[test]
-    fn full_install_includes_both_handlers_for_all_extensions() {
-        // The production `register()` writes both the thumbnail and
-        // the preview handler keys for every extension. This test
-        // mirrors that loop against the sandbox so a future addition
-        // (e.g. `.azw4`) is automatically covered.
-        let sandbox = unique_sandbox("dual");
-        let _guard = SandboxGuard(sandbox.clone());
-
-        // Register both fake CLSIDs.
-        let thumb_clsid_root = format!("{sandbox}\\CLSID\\{CLSID_STR}");
-        let preview_clsid_root = format!("{sandbox}\\CLSID\\{PREVIEW_CLSID_STR}");
-        register_clsid_at(&thumb_clsid_root, std::path::Path::new(r"C:\fake.dll"))
-            .expect("thumb clsid register");
-        register_preview_clsid_at(&preview_clsid_root, std::path::Path::new(r"C:\fake.dll"))
-            .expect("preview clsid register");
-
-        for ext in EXTENSIONS {
-            let thumb_path = ext_shellex_path_under(&sandbox, ext);
-            let preview_path = preview_ext_shellex_path_under(&sandbox, ext);
-            register_extension_at(&thumb_path, CLSID_STR).expect(ext);
-            register_extension_at(&preview_path, PREVIEW_CLSID_STR).expect(ext);
-            assert!(is_subkey_present(&thumb_path), "{ext} thumb missing");
-            assert!(is_subkey_present(&preview_path), "{ext} preview missing");
-        }
-
-        // Tear down both.
-        for ext in EXTENSIONS {
-            let thumb_path = ext_shellex_path_under(&sandbox, ext);
-            let preview_path = preview_ext_shellex_path_under(&sandbox, ext);
-            unregister_extension_at(&thumb_path).expect(ext);
-            unregister_extension_at(&preview_path).expect(ext);
-        }
-        unregister_clsid_at(&thumb_clsid_root).expect("thumb unregister");
-        unregister_clsid_at(&preview_clsid_root).expect("preview unregister");
     }
 }
