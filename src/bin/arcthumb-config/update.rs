@@ -9,8 +9,8 @@
 use std::os::windows::process::CommandExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use winreg::enums::*;
 use winreg::RegKey;
+use winreg::enums::*;
 
 /// Current version baked in at compile time from `Cargo.toml`.
 /// Can be overridden at runtime via `ARCTHUMB_FAKE_VERSION` for
@@ -26,8 +26,7 @@ fn effective_version() -> &'static str {
         .as_str()
 }
 
-const GITHUB_API_URL: &str =
-    "https://api.github.com/repos/citrussoda-com/ArcThumb/releases/latest";
+const GITHUB_API_URL: &str = "https://api.github.com/repos/citrussoda-com/ArcThumb/releases/latest";
 
 /// Download page opened by the update notification.
 const DOWNLOAD_URL: &str = "https://citrussoda.com/arcthumb";
