@@ -84,6 +84,35 @@ cargo test
 cargo llvm-cov --summary-only
 ```
 
+### Testing the update / donation dialogs
+
+The config GUI checks for updates on startup and shows a donation prompt after a version upgrade. The environment variable `ARCTHUMB_FAKE_VERSION` overrides the compiled-in version at runtime, so you can test both dialogs without rebuilding.
+
+```powershell
+# --- Update notification dialog ---
+# Pretend the running build is v0.0.1 so the latest GitHub release
+# (v0.2.0) looks like a new version.
+$env:ARCTHUMB_FAKE_VERSION = "0.0.1"
+Remove-ItemProperty -Path 'HKCU:\Software\ArcThumb' -Name 'LastUpdateCheck' -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path 'HKCU:\Software\ArcThumb' -Name 'SkippedVersion' -ErrorAction SilentlyContinue
+target\release\arcthumb-config.exe
+
+# --- Donation prompt dialog ---
+# Set LastSeenVersion older than the current build so the app thinks
+# the user just upgraded.
+Remove-Item Env:\ARCTHUMB_FAKE_VERSION -ErrorAction SilentlyContinue
+Set-ItemProperty -Path 'HKCU:\Software\ArcThumb' -Name 'LastSeenVersion' -Value '0.1.0' -Type String
+Set-ItemProperty -Path 'HKCU:\Software\ArcThumb' -Name 'DonationDismissed' -Value 0 -Type DWord
+Set-ItemProperty -Path 'HKCU:\Software\ArcThumb' -Name 'DonationSkipCount' -Value 0 -Type DWord
+target\release\arcthumb-config.exe
+```
+
+To disable the update check entirely:
+
+```powershell
+Set-ItemProperty -Path 'HKCU:\Software\ArcThumb' -Name 'UpdateCheckEnabled' -Value 0 -Type DWord
+```
+
 ### Regenerating the icon
 
 If you change `assets/icon.png`, run `cargo run --example make_icon` to rebuild the multi-resolution `assets/icon.ico` that gets embedded into the DLL and the config exe.

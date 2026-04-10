@@ -69,9 +69,13 @@ jxl-oxide = { version = "0.11", features = ["image"], optional = true }
 # out of the heavy optional modules we don't need: image-decoder,
 # datetime-picker, rich-textbox, file-dialog, flexbox, etc.
 native-windows-gui = { version = "1.0", default-features = false, features = [
-    "cursor", "message-window", "menu", "frame",
+    "cursor", "message-window", "menu", "frame", "notice",
 ] }
 native-windows-derive = "1.0"
+# HTTP client for the update checker in arcthumb-config. Blocking API
+# called from a background thread — no async runtime needed. Only
+# referenced from the config binary; LTO strips it from the DLL.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [build-dependencies]
 # Compile and embed an application manifest so arcthumb-config.exe

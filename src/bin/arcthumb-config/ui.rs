@@ -7,6 +7,7 @@
 //! changed.
 
 use std::cell::{Cell, RefCell};
+use std::sync::{Arc, Mutex};
 
 use native_windows_derive::NwgUi;
 use native_windows_gui as nwg;
@@ -16,6 +17,7 @@ use arcthumb::settings::{Settings, SortOrder};
 
 use crate::state::{EXT_COUNT, UiModel};
 use crate::strings::{self, Strings};
+use crate::update;
 
 // `#[derive(NwgUi)]` needs the struct to be `Default`, and `Default`
 // can't pick a language, so the currently-selected strings live in a
@@ -183,14 +185,42 @@ pub struct ConfigApp {
     #[nwg_events( OnButtonClick: [ConfigApp::on_apply] )]
     apply_btn: nwg::Button,
 
+    // ------------------------------------------------------------------
+    // Background update check
+    // ------------------------------------------------------------------
+    #[nwg_control]
+    #[nwg_events(OnNotice: [ConfigApp::on_update_check_complete])]
+    update_notice: nwg::Notice,
+
     // Non-control state.
     model: RefCell<UiModel>,
     should_close: Cell<bool>,
+    /// Filled by the background update-check thread; consumed by the
+    /// Notice handler on the UI thread.
+    pub update_result: Arc<Mutex<Option<update::UpdateInfo>>>,
 }
 
 impl ConfigApp {
     pub fn set_initial_model(&self, model: UiModel) {
         *self.model.borrow_mut() = model;
+    }
+
+    /// Spawn a background thread that checks for updates. When it
+    /// finishes, the `update_notice` fires and the result is picked
+    /// up by `on_update_check_complete`.
+    pub fn start_update_check(&self) {
+        let sender = self.update_notice.sender();
+        let slot = Arc::clone(&self.update_result);
+        std::thread::spawn(move || {
+            if update::should_check_now() {
+                if let Some(info) = update::check_for_update() {
+                    if !update::is_version_skipped(&info.latest_version) {
+                        *slot.lock().unwrap() = Some(info);
+                    }
+                }
+            }
+            sender.notice();
+        });
     }
 
     /// Push the current `model` into every control.
@@ -428,6 +458,64 @@ impl ConfigApp {
             format!("{msg}\n\n{detail}")
         };
         nwg::modal_error_message(&self.window, s().error_title, &body);
+    }
+
+    // ------------------------------------------------------------------
+    // Update check handlers
+    // ------------------------------------------------------------------
+
+    fn on_update_check_complete(&self) {
+        let info = self.update_result.lock().unwrap().take();
+        if let Some(info) = info {
+            self.show_update_dialog(&info);
+        }
+    }
+
+    fn show_update_dialog(&self, info: &update::UpdateInfo) {
+        let strings = s();
+        let title = strings
+            .update_available
+            .replacen("{}", &info.latest_version, 1)
+            .replacen("{}", update::current_version(), 1);
+        let content = format!("{title}\n\n{}", strings.update_prompt);
+        let params = nwg::MessageParams {
+            title: "ArcThumb",
+            content: &content,
+            buttons: nwg::MessageButtons::YesNoCancel,
+            icons: nwg::MessageIcons::Info,
+        };
+        match nwg::modal_message(&self.window, &params) {
+            nwg::MessageChoice::Yes => {
+                update::open_url(&info.release_url);
+            }
+            nwg::MessageChoice::No => {
+                update::skip_version(&info.latest_version);
+            }
+            _ => {} // Cancel = remind later, do nothing
+        }
+    }
+
+    pub fn show_donation_dialog(&self, version: &str) {
+        let strings = s();
+        let body = strings.donation_prompt.replacen("{}", version, 1);
+        let params = nwg::MessageParams {
+            title: strings.donation_title,
+            content: &body,
+            buttons: nwg::MessageButtons::YesNoCancel,
+            icons: nwg::MessageIcons::Info,
+        };
+        match nwg::modal_message(&self.window, &params) {
+            nwg::MessageChoice::Yes => {
+                update::open_url(update::sponsor_url());
+            }
+            nwg::MessageChoice::No => {
+                update::record_donation_skip();
+            }
+            _ => {
+                // Cancel = don't show again
+                update::dismiss_donation();
+            }
+        }
     }
 }
 

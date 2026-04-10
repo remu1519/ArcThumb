@@ -144,7 +144,8 @@ mod tests {
 
     #[test]
     fn matches_full_paths() {
-        let p = Path::new(r"C:\Users\foo\AppData\Local\Microsoft\Windows\Explorer\thumbcache_96.db");
+        let p =
+            Path::new(r"C:\Users\foo\AppData\Local\Microsoft\Windows\Explorer\thumbcache_96.db");
         assert!(is_cache_file(p));
     }
 }

@@ -36,6 +36,7 @@ mod dll_path;
 mod state;
 mod strings;
 mod ui;
+mod update;
 
 use native_windows_gui as nwg;
 use nwg::NativeUi;
@@ -116,6 +117,17 @@ fn run_gui() {
     let app = ui::ConfigApp::build_ui(Default::default()).expect("failed to build UI");
     app.set_initial_model(model);
     app.refresh_from_model();
+
+    // Donation prompt — synchronous, runs before the event loop.
+    // Only fires when the user has just upgraded to a newer version.
+    if let Some(ver) = update::should_show_donation() {
+        app.show_donation_dialog(&ver);
+        update::record_donation_shown();
+    }
+
+    // Background update check — non-blocking. The Notice control
+    // signals the UI thread when the result is ready.
+    app.start_update_check();
 
     nwg::dispatch_thread_events();
     drop(app);

@@ -30,6 +30,12 @@ pub struct Strings {
     pub error_title: &'static str,
     pub error_save: &'static str,
     pub error_register: &'static str,
+    // Update check
+    pub update_available: &'static str,
+    pub update_prompt: &'static str,
+    // Donation prompt
+    pub donation_title: &'static str,
+    pub donation_prompt: &'static str,
 }
 
 pub const EN: Strings = Strings {
@@ -54,6 +60,10 @@ pub const EN: Strings = Strings {
     error_title: "ArcThumb",
     error_save: "Failed to save settings to the registry.",
     error_register: "Failed to update shell extension registration.",
+    update_available: "A new version of ArcThumb is available: v{}  (current: v{})",
+    update_prompt: "[Yes] Open download page\n[No] Skip this version\n[Cancel] Remind me later",
+    donation_title: "Thank you for updating!",
+    donation_prompt: "ArcThumb has been updated to v{}.\nWould you like to support development?\n\n[Yes] Open sponsor page\n[No] Maybe next time\n[Cancel] Don't show again",
 };
 
 pub const JA: Strings = Strings {
@@ -74,6 +84,10 @@ pub const JA: Strings = Strings {
     error_title: "ArcThumb",
     error_save: "設定の保存に失敗しました。",
     error_register: "シェル拡張の登録状態の更新に失敗しました。",
+    update_available: "ArcThumb の新しいバージョンがあります: v{}  (現在: v{})",
+    update_prompt: "[はい] ダウンロードページを開く\n[いいえ] このバージョンをスキップ\n[キャンセル] あとで通知",
+    donation_title: "アップデートありがとうございます！",
+    donation_prompt: "ArcThumb v{} にアップデートされました。\n開発を支援しますか？\n\n[はい] スポンサーページを開く\n[いいえ] また今度\n[キャンセル] 今後表示しない",
 };
 
 /// Resolve the UI language to use right now.
