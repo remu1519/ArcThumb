@@ -23,7 +23,7 @@ use crate::bitmap;
 use super::ArcThumbPreviewHandler;
 
 /// Owned HBITMAP wrapper that frees the GDI handle on Drop.
-pub(super) struct CachedBitmap {
+pub(crate) struct CachedBitmap {
     pub width: i32,
     pub height: i32,
     pub hbitmap: HBITMAP,
