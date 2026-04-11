@@ -112,7 +112,7 @@ fn find_cover_id(xml: &str) -> Option<String> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
 
-    // Use simple depth counters rather than a path stack — FB2 only
+    // Simple depth counters rather than a path stack — FB2 only
     // ever has one title-info / coverpage active at a time.
     let mut in_title_info: i32 = 0;
     let mut in_coverpage: i32 = 0;
@@ -120,38 +120,49 @@ fn find_cover_id(xml: &str) -> Option<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                if qname_local_eq(e.name(), b"title-info") {
-                    in_title_info += 1;
-                } else if qname_local_eq(e.name(), b"coverpage") {
-                    in_coverpage += 1;
-                }
+                update_section_depth(e.name(), 1, &mut in_title_info, &mut in_coverpage);
             }
             Ok(Event::End(e)) => {
-                if qname_local_eq(e.name(), b"title-info") {
-                    in_title_info -= 1;
-                } else if qname_local_eq(e.name(), b"coverpage") {
-                    in_coverpage -= 1;
+                update_section_depth(e.name(), -1, &mut in_title_info, &mut in_coverpage);
+            }
+            Ok(Event::Empty(e)) if in_title_info > 0 && in_coverpage > 0 => {
+                if let Some(id) = cover_image_id(&e, &reader) {
+                    return Some(id);
                 }
             }
-            Ok(Event::Empty(e)) => {
-                if qname_local_eq(e.name(), b"image")
-                    && in_title_info > 0
-                    && in_coverpage > 0
-                    && let Some(href) = attr_value(&e, &reader, b"href")
-                {
-                    // The href is "#binary_id"; strip the leading
-                    // `#`. Some malformed FB2s omit it.
-                    let id = href.strip_prefix('#').unwrap_or(&href).to_string();
-                    if !id.is_empty() {
-                        return Some(id);
-                    }
-                }
-            }
-            Ok(Event::Eof) => return None,
-            Err(_) => return None,
+            Ok(Event::Eof) | Err(_) => return None,
             _ => {}
         }
         buf.clear();
+    }
+}
+
+/// Adjust the title-info / coverpage nesting counters when a tag of
+/// the same name is entered (`delta = 1`) or exited (`delta = -1`).
+/// Other tags are ignored.
+fn update_section_depth(name: QName, delta: i32, in_title_info: &mut i32, in_coverpage: &mut i32) {
+    if qname_local_eq(name, b"title-info") {
+        *in_title_info += delta;
+    } else if qname_local_eq(name, b"coverpage") {
+        *in_coverpage += delta;
+    }
+}
+
+/// Extract the binary id from a `<image l:href="#id"/>` element.
+/// Returns `None` if `e` is not an `<image>`, has no `href`, or
+/// resolves to the empty string after stripping the leading `#`.
+fn cover_image_id(e: &BytesStart, reader: &Reader<&[u8]>) -> Option<String> {
+    if !qname_local_eq(e.name(), b"image") {
+        return None;
+    }
+    let href = attr_value(e, reader, b"href")?;
+    // The href is "#binary_id"; strip the leading `#`. Some malformed
+    // FB2s omit it, so the call is `unwrap_or` not `?`.
+    let id = href.strip_prefix('#').unwrap_or(&href);
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
     }
 }
 
@@ -182,90 +193,124 @@ where
     let mut reader = Reader::from_str(xml);
     // We must NOT trim text inside <binary> or quick-xml will
     // collapse whitespace runs in ways that change base64 padding.
-    // We strip whitespace ourselves below.
+    // We strip whitespace ourselves in `BinaryCollector::finish`.
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
-
-    let mut in_target = false;
-    let mut found_target = false;
-    let mut target_id: Option<String> = None;
-    let mut target_ct: Option<String> = None;
-    let mut target_text = String::new();
+    let mut collector = BinaryCollector::default();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                if !in_target && qname_local_eq(e.name(), b"binary") {
-                    let id = attr_value(&e, &reader, b"id");
-                    let ct = attr_value(&e, &reader, b"content-type");
-                    if let Some(id_val) = id.as_ref()
-                        && matcher(id_val, ct.as_deref())
-                    {
-                        in_target = true;
-                        found_target = true;
-                        target_id = Some(id_val.clone());
-                        target_ct = ct;
-                        target_text.clear();
-                    }
-                }
-            }
-            Ok(Event::End(e)) => {
-                if in_target && qname_local_eq(e.name(), b"binary") {
-                    break;
-                }
-            }
-            Ok(Event::Text(t)) if in_target => {
-                let bytes: &[u8] = &t;
-                if let Ok(s) = std::str::from_utf8(bytes) {
-                    target_text.push_str(s);
-                }
-            }
-            Ok(Event::CData(t)) if in_target => {
-                if let Ok(s) = std::str::from_utf8(&t) {
-                    target_text.push_str(s);
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(_) => break,
+            Ok(Event::Start(e)) => collector.try_enter(&e, &reader, &matcher),
+            Ok(Event::End(e)) if collector.try_exit(&e) => break,
+            Ok(Event::Text(t)) if collector.is_active() => collector.append_text(&t),
+            Ok(Event::CData(t)) if collector.is_active() => collector.append_text(&t),
+            Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
         buf.clear();
     }
 
-    if !found_target {
-        return None;
+    collector.finish()
+}
+
+/// Accumulator for the body text of one matching `<binary>` element.
+///
+/// Owns all the state the previous flat loop had to juggle by hand:
+/// whether we are currently inside a target binary, the captured id
+/// and content-type, and the appended text. Splitting it out makes
+/// `extract_binary_matching` short enough to fit on one screen and
+/// gives the post-loop "decode + name" logic an obvious home.
+#[derive(Default)]
+struct BinaryCollector {
+    /// `Some` once we have entered a matching `<binary>`. Stays
+    /// `Some` after `</binary>` so `finish()` can use it.
+    target_id: Option<String>,
+    target_ct: Option<String>,
+    /// Raw concatenated `<binary>` body, possibly containing
+    /// whitespace from XML pretty-printing. Cleaned in `finish`.
+    text: String,
+}
+
+impl BinaryCollector {
+    /// True while we are inside a matching `<binary>` and should
+    /// accumulate `Text` / `CData` events into `text`.
+    fn is_active(&self) -> bool {
+        self.target_id.is_some()
     }
 
-    // Strip whitespace before decoding — XML pretty-printers love
-    // wrapping base64 across multiple lines, and the standard base64
-    // alphabet rejects whitespace.
-    let cleaned: String = target_text
-        .chars()
-        .filter(|c| !c.is_ascii_whitespace())
-        .collect();
-    let decoded = BASE64.decode(cleaned.as_bytes()).ok()?;
+    /// Try to mark the start of a `<binary>` we care about. Bails
+    /// out silently for non-binary tags, already-active state, or
+    /// binaries the matcher rejects.
+    fn try_enter<F>(&mut self, e: &BytesStart, reader: &Reader<&[u8]>, matcher: &F)
+    where
+        F: Fn(&str, Option<&str>) -> bool,
+    {
+        if self.is_active() || !qname_local_eq(e.name(), b"binary") {
+            return;
+        }
+        let Some(id) = attr_value(e, reader, b"id") else {
+            return;
+        };
+        let ct = attr_value(e, reader, b"content-type");
+        if !matcher(&id, ct.as_deref()) {
+            return;
+        }
+        self.target_id = Some(id);
+        self.target_ct = ct;
+        self.text.clear();
+    }
 
-    // Synthesize a filename. If the id already looks like one (has
-    // a dot), use it as-is. Otherwise tack on an extension derived
-    // from the content-type.
-    let id = target_id.unwrap_or_else(|| "cover".to_string());
-    let name = if id.contains('.') {
-        id
-    } else {
-        let ext = target_ct
-            .as_deref()
-            .and_then(|ct| ct.strip_prefix("image/"))
-            .map(|sub| {
-                // Trim any "+xml" suffix etc. and pick a filename-safe
-                // extension. Common cases: jpeg, jpg, png, gif, webp.
-                let cut = sub.find(['+', ';']).unwrap_or(sub.len());
-                sub[..cut].to_string()
-            })
-            .unwrap_or_else(|| "img".to_string());
-        format!("{id}.{ext}")
-    };
+    /// Returns `true` if `e` is the closing `</binary>` for the
+    /// element we entered, signalling the caller to stop reading.
+    fn try_exit(&self, e: &quick_xml::events::BytesEnd) -> bool {
+        self.is_active() && qname_local_eq(e.name(), b"binary")
+    }
 
-    Some((name, decoded))
+    /// Append a chunk of `Text` or `CData` content. Invalid UTF-8
+    /// is silently dropped — base64 is ASCII so this only matters
+    /// for malformed inputs.
+    fn append_text(&mut self, bytes: &[u8]) {
+        if let Ok(s) = std::str::from_utf8(bytes) {
+            self.text.push_str(s);
+        }
+    }
+
+    /// Decode the captured base64 and synthesize a filename. Returns
+    /// `None` if no target binary was ever entered or the base64
+    /// failed to decode.
+    fn finish(self) -> Option<(String, Vec<u8>)> {
+        let id = self.target_id?;
+        // Strip whitespace before decoding — XML pretty-printers
+        // wrap base64 across multiple lines and the standard base64
+        // alphabet rejects whitespace.
+        let cleaned: String = self
+            .text
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect();
+        let decoded = BASE64.decode(cleaned.as_bytes()).ok()?;
+        let name = synthesize_filename(id, self.target_ct.as_deref());
+        Some((name, decoded))
+    }
+}
+
+/// Build a friendly filename for a decoded binary. If `id` already
+/// looks like one (has a dot), use it verbatim; otherwise append an
+/// extension derived from `content_type`.
+fn synthesize_filename(id: String, content_type: Option<&str>) -> String {
+    if id.contains('.') {
+        return id;
+    }
+    let ext = content_type
+        .and_then(|ct| ct.strip_prefix("image/"))
+        .map(|sub| {
+            // Trim any "+xml" suffix etc. and pick a filename-safe
+            // extension. Common cases: jpeg, jpg, png, gif, webp.
+            let cut = sub.find(['+', ';']).unwrap_or(sub.len());
+            sub[..cut].to_string()
+        })
+        .unwrap_or_else(|| "img".to_string());
+    format!("{id}.{ext}")
 }
 
 // =============================================================================
@@ -514,5 +559,294 @@ mod tests {
         let (name, bytes) = try_extract_cover(&xml_bytes).expect("cover");
         assert_eq!(name, "c.png");
         assert_eq!(bytes, b"PIX");
+    }
+
+    // =========================================================================
+    // Helper-level tests added with the Phase 3 refactor.
+    //
+    // The tests above exercise `try_extract_cover` end-to-end via small
+    // FB2 strings. The tests below pin the contract of the individual
+    // helpers (`synthesize_filename`, `update_section_depth`,
+    // `BinaryCollector`) so a future regression in any one of them
+    // shows up directly with the failing helper named, rather than as
+    // a vague "the cover came back wrong" failure two layers up.
+    // =========================================================================
+
+    // ---- synthesize_filename --------------------------------------
+
+    #[test]
+    fn synthesize_filename_uses_id_verbatim_when_it_has_dot() {
+        let name = synthesize_filename("cover.png".to_string(), Some("image/jpeg"));
+        // The id already looks like a filename — content-type is ignored.
+        assert_eq!(name, "cover.png");
+    }
+
+    #[test]
+    fn synthesize_filename_appends_extension_from_image_jpeg() {
+        let name = synthesize_filename("front".to_string(), Some("image/jpeg"));
+        assert_eq!(name, "front.jpeg");
+    }
+
+    #[test]
+    fn synthesize_filename_appends_extension_from_image_png() {
+        let name = synthesize_filename("c".to_string(), Some("image/png"));
+        assert_eq!(name, "c.png");
+    }
+
+    #[test]
+    fn synthesize_filename_strips_xml_suffix() {
+        // image/svg+xml → svg, not "svg+xml"
+        let name = synthesize_filename("logo".to_string(), Some("image/svg+xml"));
+        assert_eq!(name, "logo.svg");
+    }
+
+    #[test]
+    fn synthesize_filename_strips_content_type_parameters() {
+        // image/png; charset=utf-8 → png
+        let name = synthesize_filename("c".to_string(), Some("image/png; charset=utf-8"));
+        assert_eq!(name, "c.png");
+    }
+
+    #[test]
+    fn synthesize_filename_falls_back_when_content_type_missing() {
+        let name = synthesize_filename("cover".to_string(), None);
+        assert_eq!(name, "cover.img");
+    }
+
+    #[test]
+    fn synthesize_filename_falls_back_when_content_type_not_image() {
+        // No image/ prefix → use the generic "img" extension.
+        let name = synthesize_filename("doc".to_string(), Some("text/plain"));
+        assert_eq!(name, "doc.img");
+    }
+
+    // ---- update_section_depth -------------------------------------
+
+    /// Build a `QName` from a literal byte string for use in tests.
+    /// `QName::from(...)` accepts a `&[u8]` so this is just a thin
+    /// wrapper that lets the test bodies stay readable.
+    fn qname(s: &[u8]) -> QName<'_> {
+        QName(s)
+    }
+
+    #[test]
+    fn update_section_depth_increments_title_info() {
+        let mut ti = 0;
+        let mut cp = 0;
+        update_section_depth(qname(b"title-info"), 1, &mut ti, &mut cp);
+        assert_eq!(ti, 1);
+        assert_eq!(cp, 0);
+    }
+
+    #[test]
+    fn update_section_depth_decrements_title_info() {
+        let mut ti = 1;
+        let mut cp = 0;
+        update_section_depth(qname(b"title-info"), -1, &mut ti, &mut cp);
+        assert_eq!(ti, 0);
+        assert_eq!(cp, 0);
+    }
+
+    #[test]
+    fn update_section_depth_tracks_coverpage_independently() {
+        let mut ti = 0;
+        let mut cp = 0;
+        update_section_depth(qname(b"coverpage"), 1, &mut ti, &mut cp);
+        assert_eq!(ti, 0);
+        assert_eq!(cp, 1);
+        update_section_depth(qname(b"coverpage"), -1, &mut ti, &mut cp);
+        assert_eq!(cp, 0);
+    }
+
+    #[test]
+    fn update_section_depth_ignores_other_tags() {
+        let mut ti = 5;
+        let mut cp = 7;
+        update_section_depth(qname(b"body"), 1, &mut ti, &mut cp);
+        update_section_depth(qname(b"section"), -1, &mut ti, &mut cp);
+        update_section_depth(qname(b"image"), 1, &mut ti, &mut cp);
+        assert_eq!(ti, 5);
+        assert_eq!(cp, 7);
+    }
+
+    #[test]
+    fn update_section_depth_namespace_prefix_is_handled_by_qname_eq() {
+        // qname_local_eq strips namespaces, so a `fb:title-info`
+        // event still bumps the counter.
+        let mut ti = 0;
+        let mut cp = 0;
+        update_section_depth(qname(b"fb:title-info"), 1, &mut ti, &mut cp);
+        assert_eq!(ti, 1);
+    }
+
+    // ---- BinaryCollector ------------------------------------------
+
+    /// Parse a one-element XML snippet and run `f` with the resulting
+    /// `BytesStart`. Lifted out so the per-test setup is one line.
+    fn with_first_start<R>(xml: &str, f: impl FnOnce(&BytesStart, &Reader<&[u8]>) -> R) -> R {
+        let mut reader = Reader::from_str(xml);
+        reader.config_mut().trim_text(false);
+        let mut buf = Vec::new();
+        loop {
+            let event = reader.read_event_into(&mut buf).expect("xml");
+            match event {
+                Event::Start(ref e) | Event::Empty(ref e) => return f(e, &reader),
+                Event::Eof => panic!("no Start event in test xml"),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn binary_collector_default_is_inactive_and_empty() {
+        let collector = BinaryCollector::default();
+        assert!(!collector.is_active());
+        assert!(collector.finish().is_none());
+    }
+
+    #[test]
+    fn binary_collector_try_enter_ignores_non_binary_tags() {
+        let mut collector = BinaryCollector::default();
+        with_first_start(r#"<title-info></title-info>"#, |e, r| {
+            collector.try_enter(e, r, &|_, _| true);
+        });
+        assert!(!collector.is_active());
+    }
+
+    #[test]
+    fn binary_collector_try_enter_ignores_binary_when_matcher_rejects() {
+        let mut collector = BinaryCollector::default();
+        with_first_start(
+            r#"<binary id="other.jpg" content-type="image/jpeg"></binary>"#,
+            |e, r| collector.try_enter(e, r, &|id, _| id == "wanted.jpg"),
+        );
+        assert!(!collector.is_active());
+    }
+
+    #[test]
+    fn binary_collector_try_enter_captures_id_and_ct_when_matcher_accepts() {
+        let mut collector = BinaryCollector::default();
+        with_first_start(
+            r#"<binary id="cover.jpg" content-type="image/jpeg"></binary>"#,
+            |e, r| collector.try_enter(e, r, &|_, _| true),
+        );
+        assert!(collector.is_active());
+        assert_eq!(collector.target_id.as_deref(), Some("cover.jpg"));
+        assert_eq!(collector.target_ct.as_deref(), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn binary_collector_try_enter_is_noop_while_already_active() {
+        let mut collector = BinaryCollector::default();
+        with_first_start(
+            r#"<binary id="first.jpg" content-type="image/jpeg"></binary>"#,
+            |e, r| collector.try_enter(e, r, &|_, _| true),
+        );
+        // Second try_enter on a different binary must NOT overwrite
+        // the first one — once we're locked onto a target, we stay
+        // locked until try_exit fires.
+        with_first_start(
+            r#"<binary id="second.jpg" content-type="image/png"></binary>"#,
+            |e, r| collector.try_enter(e, r, &|_, _| true),
+        );
+        assert_eq!(collector.target_id.as_deref(), Some("first.jpg"));
+        assert_eq!(collector.target_ct.as_deref(), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn binary_collector_try_enter_skips_binary_without_id() {
+        let mut collector = BinaryCollector::default();
+        with_first_start(r#"<binary content-type="image/jpeg"></binary>"#, |e, r| {
+            collector.try_enter(e, r, &|_, _| true)
+        });
+        assert!(!collector.is_active());
+    }
+
+    #[test]
+    fn binary_collector_append_text_concatenates_chunks() {
+        let mut collector = BinaryCollector::default();
+        with_first_start(
+            r#"<binary id="x.png" content-type="image/png"></binary>"#,
+            |e, r| collector.try_enter(e, r, &|_, _| true),
+        );
+        collector.append_text(b"abc");
+        collector.append_text(b"def");
+        assert_eq!(collector.text, "abcdef");
+    }
+
+    #[test]
+    fn binary_collector_append_text_drops_invalid_utf8_silently() {
+        let mut collector = BinaryCollector::default();
+        with_first_start(
+            r#"<binary id="x.png" content-type="image/png"></binary>"#,
+            |e, r| collector.try_enter(e, r, &|_, _| true),
+        );
+        collector.append_text(b"good");
+        collector.append_text(&[0xFF, 0xFE]); // invalid UTF-8
+        collector.append_text(b"bytes");
+        // The invalid chunk is dropped wholesale; the surrounding
+        // valid chunks survive.
+        assert_eq!(collector.text, "goodbytes");
+    }
+
+    #[test]
+    fn binary_collector_finish_returns_none_when_never_entered() {
+        let collector = BinaryCollector::default();
+        assert!(collector.finish().is_none());
+    }
+
+    #[test]
+    fn binary_collector_finish_decodes_clean_base64() {
+        let mut collector = BinaryCollector::default();
+        with_first_start(
+            r#"<binary id="hi.bin" content-type="image/png"></binary>"#,
+            |e, r| collector.try_enter(e, r, &|_, _| true),
+        );
+        // Base64 of b"hello"
+        collector.append_text(b"aGVsbG8=");
+        let (name, bytes) = collector.finish().expect("decoded");
+        assert_eq!(name, "hi.bin");
+        assert_eq!(bytes, b"hello");
+    }
+
+    #[test]
+    fn binary_collector_finish_strips_whitespace_in_base64() {
+        let mut collector = BinaryCollector::default();
+        with_first_start(
+            r#"<binary id="hi.bin" content-type="image/png"></binary>"#,
+            |e, r| collector.try_enter(e, r, &|_, _| true),
+        );
+        // XML pretty-printers love wrapping base64 across lines.
+        // The collector strips spaces / newlines / tabs before
+        // handing the payload to base64.
+        collector.append_text(b"aGVs\n  bG8=\t");
+        let (_, bytes) = collector.finish().expect("decoded");
+        assert_eq!(bytes, b"hello");
+    }
+
+    #[test]
+    fn binary_collector_finish_returns_none_for_invalid_base64() {
+        let mut collector = BinaryCollector::default();
+        with_first_start(
+            r#"<binary id="x.bin" content-type="image/png"></binary>"#,
+            |e, r| collector.try_enter(e, r, &|_, _| true),
+        );
+        // `!!!` is not valid base64 alphabet.
+        collector.append_text(b"!!!");
+        assert!(collector.finish().is_none());
+    }
+
+    #[test]
+    fn binary_collector_finish_uses_synthesize_filename_for_extensionless_id() {
+        let mut collector = BinaryCollector::default();
+        with_first_start(
+            r#"<binary id="cover" content-type="image/png"></binary>"#,
+            |e, r| collector.try_enter(e, r, &|_, _| true),
+        );
+        collector.append_text(b"aGVsbG8=");
+        let (name, _) = collector.finish().expect("decoded");
+        // id had no dot, so synthesize_filename appended the
+        // content-type-derived extension.
+        assert_eq!(name, "cover.png");
     }
 }

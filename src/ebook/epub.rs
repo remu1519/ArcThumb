@@ -120,19 +120,26 @@ fn parse_container_xml(xml: &str) -> Option<String> {
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Empty(e)) | Ok(Event::Start(e)) => {
-                if local_name_eq(&e, b"rootfile")
-                    && let Some(path) = attr_value(&e, &Reader::from_str(""), b"full-path")
-                {
+            Ok(Event::Empty(e) | Event::Start(e)) => {
+                if let Some(path) = rootfile_full_path(&e) {
                     return Some(path);
                 }
             }
-            Ok(Event::Eof) => return None,
-            Err(_) => return None,
+            Ok(Event::Eof) | Err(_) => return None,
             _ => {}
         }
         buf.clear();
     }
+}
+
+/// Return the `full-path` attribute of a `<rootfile>` element, or
+/// `None` if `e` is not a `<rootfile>` or has no `full-path`. Lifted
+/// out of `parse_container_xml` so the caller's match arm stays flat.
+fn rootfile_full_path(e: &BytesStart) -> Option<String> {
+    if !local_name_eq(e, b"rootfile") {
+        return None;
+    }
+    attr_value(e, &Reader::from_str(""), b"full-path")
 }
 
 /// Single-pass scan of an OPF document. Collects manifest items,

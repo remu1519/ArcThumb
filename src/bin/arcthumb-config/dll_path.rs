@@ -12,18 +12,20 @@ use std::path::PathBuf;
 use arcthumb::registry;
 
 pub fn resolve_dll_path() -> Result<PathBuf, String> {
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let candidate = dir.join("arcthumb.dll");
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
+    if let Some(p) = exe_neighbour_dll().filter(|p| p.is_file()) {
+        return Ok(p);
     }
-    if let Some(p) = registry::read_registered_dll_path()
-        && p.is_file()
-    {
+    if let Some(p) = registry::read_registered_dll_path().filter(|p| p.is_file()) {
         return Ok(p);
     }
     Err("arcthumb.dll not found next to the exe or in the registry".into())
+}
+
+/// `arcthumb.dll` placed next to the current executable. Returns
+/// the candidate path even if the file does not actually exist —
+/// the existence check is the caller's job.
+fn exe_neighbour_dll() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    Some(dir.join("arcthumb.dll"))
 }
