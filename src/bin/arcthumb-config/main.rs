@@ -31,13 +31,17 @@
 // so `cargo run` output is visible.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod apply;
 mod cache;
-mod dialog;
+mod dialogs;
 mod dll_path;
+mod extension_model;
+mod message_box;
 mod locale;
 mod state;
 mod ui;
 mod update;
+mod update_check;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

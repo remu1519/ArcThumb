@@ -86,6 +86,12 @@ embed-resource = "2"
 slint-build = "1.15"
 
 [dev-dependencies]
+# Headless backend for Slint so the arcthumb-config GUI tests can
+# create real Slint components and exercise the property setters /
+# getters / callbacks without bringing up a window or requiring a
+# display server. Keep the version pinned to the same minor as the
+# `slint` runtime above.
+i-slint-backend-testing = "1.15"
 # Integration tests need to call Win32 APIs directly (LoadLibrary,
 # GetProcAddress, SHCreateMemStream, GDI cleanup) and to talk to
 # arcthumb.dll across the COM ABI like Explorer would.

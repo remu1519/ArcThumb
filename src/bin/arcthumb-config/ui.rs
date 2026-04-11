@@ -3,43 +3,33 @@
 //! The layout and widget tree live in `ui/main.slint`. This module
 //! wires the Slint window to the rest of the binary: loads the
 //! initial model from the registry, pushes it into the Slint
-//! properties, hooks up the menu and button callbacks, and drives
-//! the modal sub-dialogs (About, Update, Donation).
-//!
-//! ## Sub-dialog lifetime
-//!
-//! Slint windows are not `Send`, so we cannot stash them in any kind
-//! of global lock. Instead, the optional sub-dialog handles live in
-//! `thread_local!` cells — `arcthumb-config` only ever has one UI
-//! thread, so this is safe and lets the closures clear the slot when
-//! the dialog is dismissed.
+//! properties, hooks up the menu and button callbacks, and
+//! delegates sub-dialogs (About / Update / Donation) to the
+//! `dialogs` module and background update polling to
+//! `update_check`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use arcthumb::registry;
 use arcthumb::settings::{Settings, SortOrder};
 use slint::{ComponentHandle, SharedString, Timer};
 
+use crate::apply::{self, RealRegistryOps};
 use crate::cache;
-use crate::dialog;
-use crate::dll_path;
+use crate::dialogs;
+use crate::extension_model::ExtensionModel;
 use crate::locale::{self, Strings};
+use crate::message_box;
 use crate::state::{EXT_COUNT, UiModel};
 use crate::update;
+use crate::update_check;
 
 slint::include_modules!();
 
-// Sub-dialogs are stored on the UI thread so the OK / Close callbacks
-// can drop their own holder. The window itself is `!Send`, so a
-// thread-local is the natural fit (we never have more than one UI
-// thread).
-thread_local! {
-    static ABOUT_DIALOG: RefCell<Option<AboutDialog>> = const { RefCell::new(None) };
-    static UPDATE_DIALOG: RefCell<Option<UpdateDialog>> = const { RefCell::new(None) };
-    static DONATION_DIALOG: RefCell<Option<DonationDialog>> = const { RefCell::new(None) };
-}
+// `slint::include_modules!()` emits `pub` types directly into this
+// module, so sibling modules access them as `crate::ui::ExtensionEntry`
+// (and `crate::ui::AboutDialog` etc.) without an explicit re-export.
 
 /// Launch the settings GUI. Blocks on the Slint event loop.
 pub fn run_gui() -> Result<(), slint::PlatformError> {
@@ -48,16 +38,28 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     apply_strings(&window, strings);
 
     let initial_model = UiModel::load();
+    let extensions = ExtensionModel::from_enabled(&initial_model.ext_enabled);
+    window.set_extensions(extensions.as_model());
     push_model(&window, &initial_model);
     let state = Rc::new(RefCell::new(initial_model));
+
+    // toggle_extension: forward the click to the model so the row
+    // re-emits with the flipped enabled flag.
+    {
+        let extensions = extensions.clone();
+        window.on_toggle_extension(move |i| {
+            extensions.toggle(i as usize);
+        });
+    }
 
     // OK
     {
         let weak = window.as_weak();
         let state = Rc::clone(&state);
+        let extensions = extensions.clone();
         window.on_ok_clicked(move || {
             if let Some(w) = weak.upgrade()
-                && apply_changes(&w, &state, strings)
+                && apply_changes(&w, &state, &extensions, strings)
             {
                 let _ = w.hide();
             }
@@ -68,9 +70,10 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     {
         let weak = window.as_weak();
         let state = Rc::clone(&state);
+        let extensions = extensions.clone();
         window.on_apply_clicked(move || {
             if let Some(w) = weak.upgrade() {
-                let _ = apply_changes(&w, &state, strings);
+                let _ = apply_changes(&w, &state, &extensions, strings);
             }
         });
     }
@@ -92,7 +95,7 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
 
     // Help → About
     window.on_about_clicked(move || {
-        show_about(strings);
+        dialogs::show_about(strings);
     });
 
     // File → Exit
@@ -113,14 +116,14 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     // timer immediately when the value goes out of scope.
     if let Some(ver) = update::should_show_donation() {
         Timer::single_shot(Duration::ZERO, move || {
-            show_donation_dialog(&ver, strings);
+            dialogs::show_donation_dialog(&ver, strings);
             update::record_donation_shown();
         });
     }
 
     // Background update check — non-blocking. The result is marshalled
     // back onto the UI thread via `slint::invoke_from_event_loop`.
-    start_update_check(strings);
+    update_check::start_update_check(strings);
 
     window.run()?;
     Ok(())
@@ -148,39 +151,20 @@ fn apply_strings(window: &MainWindow, s: &Strings) {
     window.set_btn_regenerate(SharedString::from(s.btn_regenerate));
 }
 
+/// Push the non-extension parts of `model` into the Slint window.
+/// Extensions are handled separately by `ExtensionModel::replace_enabled`
+/// because they live in a `VecModel` rather than scalar properties.
 fn push_model(window: &MainWindow, model: &UiModel) {
-    window.set_ext_zip(model.ext_enabled[0]);
-    window.set_ext_cbz(model.ext_enabled[1]);
-    window.set_ext_rar(model.ext_enabled[2]);
-    window.set_ext_cbr(model.ext_enabled[3]);
-    window.set_ext_7z(model.ext_enabled[4]);
-    window.set_ext_cb7(model.ext_enabled[5]);
-    window.set_ext_cbt(model.ext_enabled[6]);
-    window.set_ext_epub(model.ext_enabled[7]);
-    window.set_ext_fb2(model.ext_enabled[8]);
-    window.set_ext_mobi(model.ext_enabled[9]);
-    window.set_ext_azw(model.ext_enabled[10]);
-    window.set_ext_azw3(model.ext_enabled[11]);
     window.set_sort_natural(matches!(model.settings.sort_order, SortOrder::Natural));
     window.set_prefer_cover(model.settings.prefer_cover_names);
     window.set_enable_preview(model.preview_enabled);
 }
 
-fn collect_from_ui(window: &MainWindow) -> (Settings, [bool; EXT_COUNT], bool) {
-    let ext_enabled = [
-        window.get_ext_zip(),
-        window.get_ext_cbz(),
-        window.get_ext_rar(),
-        window.get_ext_cbr(),
-        window.get_ext_7z(),
-        window.get_ext_cb7(),
-        window.get_ext_cbt(),
-        window.get_ext_epub(),
-        window.get_ext_fb2(),
-        window.get_ext_mobi(),
-        window.get_ext_azw(),
-        window.get_ext_azw3(),
-    ];
+fn collect_from_ui(
+    window: &MainWindow,
+    extensions: &ExtensionModel,
+) -> (Settings, [bool; EXT_COUNT], bool) {
+    let ext_enabled = extensions.enabled_array::<EXT_COUNT>();
     let sort_order = if window.get_sort_natural() {
         SortOrder::Natural
     } else {
@@ -197,112 +181,51 @@ fn collect_from_ui(window: &MainWindow) -> (Settings, [bool; EXT_COUNT], bool) {
 // Apply
 // =============================================================================
 
-fn apply_changes(window: &MainWindow, state: &Rc<RefCell<UiModel>>, strings: &Strings) -> bool {
-    let (new_settings, new_ext_enabled, new_preview_enabled) = collect_from_ui(window);
-    let mut ok = true;
-    // Tracks whether anything in the registry actually changed. We
-    // use this to decide whether to poke the Shell about its icon/
-    // thumbnail cache at the end — there's no point nagging Explorer
-    // when the user clicked Apply without changing anything that
-    // affects shell registrations.
-    let mut shell_state_changed = false;
+fn apply_changes(
+    window: &MainWindow,
+    state: &Rc<RefCell<UiModel>>,
+    extensions: &ExtensionModel,
+    strings: &Strings,
+) -> bool {
+    let (new_settings, new_ext_enabled, new_preview_enabled) = collect_from_ui(window, extensions);
 
-    // --- Settings (sort order + prefer cover)
-    let old_settings = state.borrow().settings;
-    if new_settings != old_settings
-        && let Err(e) = new_settings.save_to_registry()
-    {
-        dialog::error(
+    let plan = apply::compute_apply_plan(
+        &state.borrow(),
+        new_settings,
+        new_ext_enabled,
+        new_preview_enabled,
+    );
+    let outcome = apply::apply_plan(&plan, &RealRegistryOps);
+
+    if let Some(detail) = &outcome.settings_save_error {
+        message_box::error(
             strings.error_title,
-            &format!("{}\n\n{e}", strings.error_save),
+            &format!("{}\n\n{detail}", strings.error_save),
         );
-        return false;
     }
-
-    // --- Per-extension shell binding diff
-    let old_ext = state.borrow().ext_enabled;
-    let mut failures: Vec<&'static str> = Vec::new();
-    for i in 0..EXT_COUNT {
-        let ext = registry::EXTENSIONS[i];
-        match (old_ext[i], new_ext_enabled[i]) {
-            (false, true) => {
-                if registry::register_extension(ext).is_err() {
-                    failures.push(ext);
-                    ok = false;
-                } else {
-                    shell_state_changed = true;
-                }
-            }
-            (true, false) => {
-                if registry::unregister_extension(ext).is_err() {
-                    failures.push(ext);
-                    ok = false;
-                } else {
-                    shell_state_changed = true;
-                }
-            }
-            _ => {}
-        }
-    }
-    if !failures.is_empty() {
-        dialog::error(
+    if !outcome.failed_extensions.is_empty() {
+        message_box::error(
             strings.error_title,
             &format!(
                 "{}\n\nfailed: {}",
                 strings.error_register,
-                failures.join(", ")
+                outcome.failed_extensions.join(", ")
             ),
         );
     }
-
-    // --- Preview pane handler (global toggle)
-    let old_preview = state.borrow().preview_enabled;
-    if old_preview != new_preview_enabled {
-        match apply_preview_toggle(new_preview_enabled) {
-            Ok(()) => shell_state_changed = true,
-            Err(e) => {
-                dialog::error(
-                    strings.error_title,
-                    &format!("{}\n\n{e}", strings.error_register),
-                );
-                ok = false;
-            }
-        }
-    }
-
-    // Whenever we touched shell registrations, ask Explorer to
-    // invalidate its icon/thumbnail cache so the change takes effect
-    // immediately. Without this, newly enabled extensions would still
-    // show the old "no thumbnail" cache entry until the user logs out
-    // or wipes thumbcache_*.db by hand.
-    if shell_state_changed {
-        registry::notify_assoc_changed();
+    if let Some(detail) = &outcome.preview_error {
+        message_box::error(
+            strings.error_title,
+            &format!("{}\n\n{detail}", strings.error_register),
+        );
     }
 
     let reloaded = UiModel::load();
     push_model(window, &reloaded);
+    extensions.replace_enabled(&reloaded.ext_enabled);
     *state.borrow_mut() = reloaded;
 
-    ok
-}
-
-/// Register or unregister the preview-handler CLSID and bind/unbind
-/// it across every supported extension. Called when the user flips
-/// the "Enable preview pane" checkbox and clicks Apply.
-fn apply_preview_toggle(enable: bool) -> std::io::Result<()> {
-    if enable {
-        let dll = dll_path::resolve_dll_path().map_err(std::io::Error::other)?;
-        registry::register_preview_clsid(&dll)?;
-        for ext in registry::EXTENSIONS {
-            registry::register_preview_extension(ext)?;
-        }
-    } else {
-        for ext in registry::EXTENSIONS {
-            let _ = registry::unregister_preview_extension(ext);
-        }
-        let _ = registry::unregister_preview_clsid();
-    }
-    Ok(())
+    outcome.is_ok()
 }
 
 // =============================================================================
@@ -310,18 +233,18 @@ fn apply_preview_toggle(enable: bool) -> std::io::Result<()> {
 // =============================================================================
 
 fn handle_regenerate(strings: &Strings) {
-    if !dialog::confirm_warning(strings.error_title, strings.regen_confirm) {
+    if !message_box::confirm_warning(strings.error_title, strings.regen_confirm) {
         return;
     }
     match cache::wipe_thumbnail_cache() {
         Ok(report) if report.failed.is_empty() => {
-            dialog::info(strings.error_title, strings.regen_done);
+            message_box::info(strings.error_title, strings.regen_done);
         }
         Ok(_) => {
-            dialog::error(strings.error_title, strings.regen_partial);
+            message_box::error(strings.error_title, strings.regen_partial);
         }
         Err(e) => {
-            dialog::error(
+            message_box::error(
                 strings.error_title,
                 &format!("{}\n\n{e}", strings.regen_partial),
             );
@@ -329,178 +252,176 @@ fn handle_regenerate(strings: &Strings) {
     }
 }
 
-// =============================================================================
-// About dialog — Slint window so we can embed `AboutSlint`.
-// =============================================================================
+#[cfg(test)]
+mod tests {
+    //! Slint glue tests.
+    //!
+    //! All Slint-touching assertions live inside a single `#[test]`
+    //! function on purpose: `i_slint_backend_testing::init_no_event_loop()`
+    //! pins the test platform to the thread that first called it,
+    //! and the cargo test harness runs tests on independent worker
+    //! threads. Splitting these into multiple `#[test]`s causes the
+    //! second-and-later tests to land on a different worker and
+    //! crash with "The Slint platform was initialized in another
+    //! thread".
+    //!
+    //! Each subsection is wrapped in its own block + comment so
+    //! `cargo test` failure messages still pinpoint the failing
+    //! assertion. The cost of bundling them is one test entry in
+    //! the report; the benefit is reliable execution under the
+    //! default parallel test runner.
 
-fn show_about(strings: &Strings) {
-    // Already open? Do nothing — Slint will keep the existing window
-    // focused. We avoid stacking duplicate dialogs on rapid clicks.
-    let already_open = ABOUT_DIALOG.with(|h| h.borrow().is_some());
-    if already_open {
-        return;
-    }
+    use super::*;
+    use arcthumb::settings::SortOrder;
 
-    let dialog = match AboutDialog::new() {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-    dialog.set_dialog_title(SharedString::from(strings.about_title));
-    dialog.set_body_text(SharedString::from(strings.about_body));
-    dialog.set_btn_close(SharedString::from(strings.btn_close));
-
-    let weak = dialog.as_weak();
-    dialog.on_close_clicked(move || {
-        if let Some(w) = weak.upgrade() {
-            let _ = w.hide();
+    fn baseline_model() -> UiModel {
+        let mut ext = [false; EXT_COUNT];
+        // A non-trivial subset so a flipped index is detectable.
+        ext[0] = true; // .zip
+        ext[2] = true; // .rar
+        ext[7] = true; // .epub
+        UiModel {
+            settings: Settings {
+                sort_order: SortOrder::Natural,
+                prefer_cover_names: true,
+            },
+            ext_enabled: ext,
+            preview_enabled: true,
         }
-        ABOUT_DIALOG.with(|h| *h.borrow_mut() = None);
-    });
-
-    if dialog.show().is_ok() {
-        ABOUT_DIALOG.with(|h| *h.borrow_mut() = Some(dialog));
     }
-}
 
-// =============================================================================
-// Update dialog — Slint window with a "Skip this version" checkbox.
-// =============================================================================
+    #[test]
+    fn slint_glue_round_trips_and_localises() {
+        i_slint_backend_testing::init_no_event_loop();
 
-fn start_update_check(strings: &'static Strings) {
-    std::thread::spawn(move || {
-        if !update::should_check_now() {
-            return;
+        // ---- push_then_collect_round_trips_full_model -----------
+        {
+            let window = MainWindow::new().expect("create MainWindow");
+            let original = baseline_model();
+            let extensions = ExtensionModel::from_enabled(&original.ext_enabled);
+            window.set_extensions(extensions.as_model());
+
+            push_model(&window, &original);
+            let (settings, ext_enabled, preview) = collect_from_ui(&window, &extensions);
+
+            assert_eq!(settings, original.settings, "settings round-trip");
+            assert_eq!(ext_enabled, original.ext_enabled, "ext_enabled round-trip");
+            assert_eq!(preview, original.preview_enabled, "preview round-trip");
         }
-        let Some(info) = update::check_for_update() else {
-            return;
-        };
-        if update::is_version_skipped(&info.latest_version) {
-            return;
+
+        // ---- push_then_collect_round_trips_alphabetical_no_cover
+        {
+            let window = MainWindow::new().expect("create MainWindow");
+            let model = UiModel {
+                settings: Settings {
+                    sort_order: SortOrder::Alphabetical,
+                    prefer_cover_names: false,
+                },
+                ext_enabled: [true; EXT_COUNT],
+                preview_enabled: false,
+            };
+            let extensions = ExtensionModel::from_enabled(&model.ext_enabled);
+            window.set_extensions(extensions.as_model());
+
+            push_model(&window, &model);
+            let (settings, ext_enabled, preview) = collect_from_ui(&window, &extensions);
+
+            assert_eq!(settings.sort_order, SortOrder::Alphabetical);
+            assert!(!settings.prefer_cover_names);
+            assert_eq!(ext_enabled, [true; EXT_COUNT]);
+            assert!(!preview);
         }
-        // Marshal the prompt back to the UI thread so the Slint
-        // window is owned by the same thread as the rest of the GUI.
-        let _ = slint::invoke_from_event_loop(move || {
-            show_update_dialog(info, strings);
-        });
-    });
-}
 
-fn show_update_dialog(info: update::UpdateInfo, strings: &'static Strings) {
-    let already_open = UPDATE_DIALOG.with(|h| h.borrow().is_some());
-    if already_open {
-        return;
-    }
+        // ---- toggle_extension_callback_path_via_extension_model
+        // Confirm that calling `ExtensionModel::toggle` (the same
+        // operation Slint runs from the `toggle_extension` callback)
+        // flips the right slots and that `collect_from_ui` reads
+        // them back in the same index order as
+        // `registry::EXTENSIONS`. Detailed name/index correctness
+        // is covered by `extension_model::tests`; this is the
+        // end-to-end check that the wiring inside `ui.rs` agrees.
+        {
+            let window = MainWindow::new().expect("create MainWindow");
+            let extensions = ExtensionModel::from_enabled(&[false; EXT_COUNT]);
+            window.set_extensions(extensions.as_model());
+            push_model(
+                &window,
+                &UiModel {
+                    settings: Settings::default(),
+                    ext_enabled: [false; EXT_COUNT],
+                    preview_enabled: false,
+                },
+            );
+            extensions.toggle(5); // .cb7
+            extensions.toggle(11); // .azw3
 
-    let dialog = match UpdateDialog::new() {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-
-    let header = strings
-        .update_available
-        .replacen("{}", &info.latest_version, 1)
-        .replacen("{}", update::current_version(), 1);
-
-    dialog.set_dialog_title(SharedString::from(strings.update_title));
-    dialog.set_message_text(SharedString::from(header));
-    dialog.set_skip_checkbox_label(SharedString::from(strings.update_skip_checkbox));
-    dialog.set_btn_open(SharedString::from(strings.update_btn_open));
-    dialog.set_btn_later(SharedString::from(strings.update_btn_later));
-
-    // Open download page. Honors the skip checkbox so the user can
-    // both grab the new version and tell us not to remind them again.
-    {
-        let weak = dialog.as_weak();
-        let release_url = info.release_url.clone();
-        let latest_version = info.latest_version.clone();
-        dialog.on_open_clicked(move || {
-            if let Some(d) = weak.upgrade() {
-                if d.get_skip_checked() {
-                    update::skip_version(&latest_version);
+            let (_, ext, _) = collect_from_ui(&window, &extensions);
+            assert!(ext[5], ".cb7 should be on (index 5)");
+            assert!(ext[11], ".azw3 should be on (index 11)");
+            for (i, on) in ext.iter().enumerate() {
+                if i != 5 && i != 11 {
+                    assert!(!on, "index {i} should be off");
                 }
-                let _ = d.hide();
             }
-            update::open_url(&release_url);
-            UPDATE_DIALOG.with(|h| *h.borrow_mut() = None);
-        });
-    }
+        }
 
-    // Remind me later. Same checkbox handling, no URL.
-    {
-        let weak = dialog.as_weak();
-        let latest_version = info.latest_version.clone();
-        dialog.on_later_clicked(move || {
-            if let Some(d) = weak.upgrade() {
-                if d.get_skip_checked() {
-                    update::skip_version(&latest_version);
-                }
-                let _ = d.hide();
-            }
-            UPDATE_DIALOG.with(|h| *h.borrow_mut() = None);
-        });
-    }
+        // ---- apply_strings_populates_every_label_for_english ---
+        // Spot-check every property `apply_strings` writes. A
+        // future regression that swaps two setters or drops one
+        // would leave that property as the empty default.
+        {
+            let window = MainWindow::new().expect("create MainWindow");
+            apply_strings(&window, &locale::EN);
 
-    if dialog.show().is_ok() {
-        UPDATE_DIALOG.with(|h| *h.borrow_mut() = Some(dialog));
-    }
-}
+            assert_eq!(window.get_window_title(), locale::EN.window_title);
+            assert_eq!(window.get_menu_file(), locale::EN.menu_file);
+            assert_eq!(window.get_menu_file_exit(), locale::EN.menu_file_exit);
+            assert_eq!(window.get_menu_help(), locale::EN.menu_help);
+            assert_eq!(window.get_menu_help_about(), locale::EN.menu_help_about);
+            assert_eq!(window.get_group_extensions(), locale::EN.group_extensions);
+            assert_eq!(window.get_group_sort(), locale::EN.group_sort);
+            assert_eq!(window.get_sort_natural_label(), locale::EN.sort_natural);
+            assert_eq!(window.get_sort_alpha_label(), locale::EN.sort_alphabetical);
+            assert_eq!(window.get_prefer_cover_label(), locale::EN.cb_prefer_cover);
+            assert_eq!(
+                window.get_enable_preview_label(),
+                locale::EN.cb_enable_preview
+            );
+            assert_eq!(window.get_btn_ok(), locale::EN.btn_ok);
+            assert_eq!(window.get_btn_cancel(), locale::EN.btn_cancel);
+            assert_eq!(window.get_btn_apply(), locale::EN.btn_apply);
+            assert_eq!(window.get_btn_regenerate(), locale::EN.btn_regenerate);
+        }
 
-// =============================================================================
-// Donation dialog — Slint window with a "Don't show again" checkbox.
-// =============================================================================
+        // ---- apply_strings_populates_every_label_for_japanese --
+        {
+            let window = MainWindow::new().expect("create MainWindow");
+            apply_strings(&window, &locale::JA);
 
-fn show_donation_dialog(version: &str, strings: &'static Strings) {
-    let already_open = DONATION_DIALOG.with(|h| h.borrow().is_some());
-    if already_open {
-        return;
-    }
+            assert_eq!(window.get_window_title(), locale::JA.window_title);
+            assert_eq!(window.get_menu_help_about(), locale::JA.menu_help_about);
+            assert_eq!(window.get_group_extensions(), locale::JA.group_extensions);
+            assert_eq!(window.get_btn_regenerate(), locale::JA.btn_regenerate);
+            // Make sure the language actually switched.
+            assert_ne!(window.get_window_title(), locale::EN.window_title);
+        }
 
-    let dialog = match DonationDialog::new() {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-
-    let body = strings.donation_prompt.replacen("{}", version, 1);
-
-    dialog.set_dialog_title(SharedString::from(strings.donation_title));
-    dialog.set_message_text(SharedString::from(body));
-    dialog.set_dont_show_label(SharedString::from(strings.donation_dont_show_checkbox));
-    dialog.set_btn_sponsor(SharedString::from(strings.donation_btn_sponsor));
-    dialog.set_btn_later(SharedString::from(strings.donation_btn_later));
-
-    // Open sponsor page. The "don't show again" checkbox is a hard
-    // dismissal — record it so the prompt never fires again.
-    {
-        let weak = dialog.as_weak();
-        dialog.on_sponsor_clicked(move || {
-            if let Some(d) = weak.upgrade() {
-                if d.get_dont_show_checked() {
-                    update::dismiss_donation();
-                }
-                let _ = d.hide();
-            }
-            update::open_url(update::sponsor_url());
-            DONATION_DIALOG.with(|h| *h.borrow_mut() = None);
-        });
-    }
-
-    // Maybe next time. Honors the dismiss checkbox the same way.
-    {
-        let weak = dialog.as_weak();
-        dialog.on_later_clicked(move || {
-            if let Some(d) = weak.upgrade() {
-                if d.get_dont_show_checked() {
-                    update::dismiss_donation();
-                } else {
-                    update::record_donation_skip();
-                }
-                let _ = d.hide();
-            }
-            DONATION_DIALOG.with(|h| *h.borrow_mut() = None);
-        });
-    }
-
-    if dialog.show().is_ok() {
-        DONATION_DIALOG.with(|h| *h.borrow_mut() = Some(dialog));
+        // ---- ok_callback_with_no_changes_produces_empty_plan ---
+        // The OK button calls compute_apply_plan against the
+        // current `state`. With an unchanged model the plan must
+        // be empty so we never touch HKCU on a stray click.
+        {
+            let window = MainWindow::new().expect("create MainWindow");
+            let model = baseline_model();
+            let extensions = ExtensionModel::from_enabled(&model.ext_enabled);
+            window.set_extensions(extensions.as_model());
+            push_model(&window, &model);
+            let (settings, ext_enabled, preview_enabled) = collect_from_ui(&window, &extensions);
+            let plan = apply::compute_apply_plan(&model, settings, ext_enabled, preview_enabled);
+            assert!(
+                plan.is_empty(),
+                "round-trip with the same model should produce an empty plan, got {plan:?}"
+            );
+        }
     }
 }

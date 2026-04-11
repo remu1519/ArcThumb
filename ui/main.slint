@@ -24,6 +24,15 @@ import {
     VerticalBox,
 } from "std-widgets.slint";
 
+// One row in the per-extension toggle list. Owned by the Rust side
+// (`extension_model::ExtensionModel`) and handed to `MainWindow`
+// via `set_extensions`. Names come from `arcthumb::registry::EXTENSIONS`
+// so the GUI list always matches what the registry layer recognises.
+export struct ExtensionEntry {
+    name: string,
+    enabled: bool,
+}
+
 export component MainWindow inherits Window {
     title: root.window_title;
     icon: @image-url("../assets/icon.png");
@@ -50,18 +59,10 @@ export component MainWindow inherits Window {
     in property <string> btn_regenerate;
 
     // ---- Two-way bindable state ---------------------------------
-    in-out property <bool> ext_zip;
-    in-out property <bool> ext_cbz;
-    in-out property <bool> ext_rar;
-    in-out property <bool> ext_cbr;
-    in-out property <bool> ext_7z;
-    in-out property <bool> ext_cb7;
-    in-out property <bool> ext_cbt;
-    in-out property <bool> ext_epub;
-    in-out property <bool> ext_fb2;
-    in-out property <bool> ext_mobi;
-    in-out property <bool> ext_azw;
-    in-out property <bool> ext_azw3;
+    // The per-extension toggle list. Driven from Rust via a
+    // `VecModel<ExtensionEntry>` so the row layout follows
+    // `arcthumb::registry::EXTENSIONS` automatically.
+    in property <[ExtensionEntry]> extensions;
     in-out property <bool> sort_natural;
     in-out property <bool> prefer_cover;
     in-out property <bool> enable_preview;
@@ -73,6 +74,10 @@ export component MainWindow inherits Window {
     callback regenerate_clicked();
     callback about_clicked();
     callback exit_clicked();
+    // User flipped the checkbox at row `index`. Slint forwards a
+    // notification only — the Rust side mutates the underlying
+    // `VecModel` and Slint re-reads the row.
+    callback toggle_extension(int);
 
     MenuBar {
         Menu {
@@ -97,28 +102,19 @@ export component MainWindow inherits Window {
 
         GroupBox {
             title: root.group_extensions;
+            // Single-column list of every entry in the model. We
+            // moved away from a 4-wide grid because Slint's `for`
+            // construct does not naturally produce row-major grids
+            // without an external layout helper, and a vertical
+            // list keeps the file short and resizable.
             VerticalBox {
-                spacing: 6px;
-                HorizontalBox {
-                    spacing: 8px;
-                    CheckBox { text: ".zip"; checked <=> root.ext_zip; }
-                    CheckBox { text: ".cbz"; checked <=> root.ext_cbz; }
-                    CheckBox { text: ".rar"; checked <=> root.ext_rar; }
-                    CheckBox { text: ".cbr"; checked <=> root.ext_cbr; }
-                }
-                HorizontalBox {
-                    spacing: 8px;
-                    CheckBox { text: ".7z"; checked <=> root.ext_7z; }
-                    CheckBox { text: ".cb7"; checked <=> root.ext_cb7; }
-                    CheckBox { text: ".cbt"; checked <=> root.ext_cbt; }
-                    CheckBox { text: ".epub"; checked <=> root.ext_epub; }
-                }
-                HorizontalBox {
-                    spacing: 8px;
-                    CheckBox { text: ".fb2"; checked <=> root.ext_fb2; }
-                    CheckBox { text: ".mobi"; checked <=> root.ext_mobi; }
-                    CheckBox { text: ".azw"; checked <=> root.ext_azw; }
-                    CheckBox { text: ".azw3"; checked <=> root.ext_azw3; }
+                spacing: 4px;
+                for entry[i] in root.extensions: CheckBox {
+                    text: entry.name;
+                    checked: entry.enabled;
+                    toggled => {
+                        root.toggle_extension(i);
+                    }
                 }
             }
         }
