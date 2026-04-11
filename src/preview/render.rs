@@ -23,7 +23,13 @@ use crate::bitmap;
 use super::ArcThumbPreviewHandler;
 
 /// Owned HBITMAP wrapper that frees the GDI handle on Drop.
-pub(super) struct CachedBitmap {
+///
+/// `pub(crate)` so it can appear in the type of
+/// `ArcThumbPreviewHandler::cache` (which is itself `pub(crate)`).
+/// The `private_interfaces` lint is unhappy when a more-private
+/// type leaks through a more-public field, even if no caller
+/// outside the module ever names it.
+pub(crate) struct CachedBitmap {
     pub width: i32,
     pub height: i32,
     pub hbitmap: HBITMAP,
