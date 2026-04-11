@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "arcthumb"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "base64",
  "crc32fast",
