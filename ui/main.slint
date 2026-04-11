@@ -1,0 +1,187 @@
+// Slint UI for arcthumb-config.exe.
+//
+// Two exported components:
+//   * MainWindow — the settings dialog (extensions, sort order,
+//     cover preference, preview-pane toggle, OK/Cancel/Apply).
+//   * AboutDialog — a small About window that embeds `AboutSlint`
+//     to satisfy the Slint Royalty-Free License 2.0 attribution
+//     requirement.
+//
+// All user-visible strings come from the Rust side via `in` properties
+// rather than `@tr("...")`. A future refactor may switch to gettext-
+// backed translations once the build toolchain is wired up.
+
+import {
+    AboutSlint,
+    Button,
+    CheckBox,
+    ComboBox,
+    GroupBox,
+    HorizontalBox,
+    VerticalBox,
+} from "std-widgets.slint";
+
+export component MainWindow inherits Window {
+    title: root.window_title;
+    preferred-width: 520px;
+    preferred-height: 500px;
+    min-width: 500px;
+    min-height: 480px;
+
+    // ---- Localized labels (set from Rust at startup) -------------
+    in property <string> window_title;
+    in property <string> group_extensions;
+    in property <string> group_sort;
+    in property <string> sort_natural_label;
+    in property <string> sort_alpha_label;
+    in property <string> prefer_cover_label;
+    in property <string> enable_preview_label;
+    in property <string> btn_ok;
+    in property <string> btn_cancel;
+    in property <string> btn_apply;
+    in property <string> btn_regenerate;
+    in property <string> btn_about;
+
+    // ---- Two-way bindable state ---------------------------------
+    in-out property <bool> ext_zip;
+    in-out property <bool> ext_cbz;
+    in-out property <bool> ext_rar;
+    in-out property <bool> ext_cbr;
+    in-out property <bool> ext_7z;
+    in-out property <bool> ext_cb7;
+    in-out property <bool> ext_cbt;
+    in-out property <bool> ext_epub;
+    in-out property <bool> ext_fb2;
+    in-out property <bool> ext_mobi;
+    in-out property <bool> ext_azw;
+    in-out property <bool> ext_azw3;
+    in-out property <bool> sort_natural;
+    in-out property <bool> prefer_cover;
+    in-out property <bool> enable_preview;
+
+    // ---- Callbacks ----------------------------------------------
+    callback ok_clicked();
+    callback cancel_clicked();
+    callback apply_clicked();
+    callback regenerate_clicked();
+    callback about_clicked();
+
+    VerticalBox {
+        padding: 14px;
+        spacing: 12px;
+
+        GroupBox {
+            title: root.group_extensions;
+            VerticalBox {
+                spacing: 6px;
+                HorizontalBox {
+                    spacing: 8px;
+                    CheckBox { text: ".zip"; checked <=> root.ext_zip; }
+                    CheckBox { text: ".cbz"; checked <=> root.ext_cbz; }
+                    CheckBox { text: ".rar"; checked <=> root.ext_rar; }
+                    CheckBox { text: ".cbr"; checked <=> root.ext_cbr; }
+                }
+                HorizontalBox {
+                    spacing: 8px;
+                    CheckBox { text: ".7z"; checked <=> root.ext_7z; }
+                    CheckBox { text: ".cb7"; checked <=> root.ext_cb7; }
+                    CheckBox { text: ".cbt"; checked <=> root.ext_cbt; }
+                    CheckBox { text: ".epub"; checked <=> root.ext_epub; }
+                }
+                HorizontalBox {
+                    spacing: 8px;
+                    CheckBox { text: ".fb2"; checked <=> root.ext_fb2; }
+                    CheckBox { text: ".mobi"; checked <=> root.ext_mobi; }
+                    CheckBox { text: ".azw"; checked <=> root.ext_azw; }
+                    CheckBox { text: ".azw3"; checked <=> root.ext_azw3; }
+                }
+            }
+        }
+
+        GroupBox {
+            title: root.group_sort;
+            ComboBox {
+                model: [root.sort_natural_label, root.sort_alpha_label];
+                current-index: root.sort_natural ? 0 : 1;
+                selected(current) => {
+                    root.sort_natural = self.current-index == 0;
+                }
+            }
+        }
+
+        CheckBox {
+            text: root.prefer_cover_label;
+            checked <=> root.prefer_cover;
+        }
+
+        CheckBox {
+            text: root.enable_preview_label;
+            checked <=> root.enable_preview;
+        }
+
+        // Flexible spacer so the button row sticks to the bottom.
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalBox {
+            spacing: 6px;
+            Button {
+                text: root.btn_regenerate;
+                clicked => { root.regenerate_clicked(); }
+            }
+            Button {
+                text: root.btn_about;
+                clicked => { root.about_clicked(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: root.btn_ok;
+                primary: true;
+                clicked => { root.ok_clicked(); }
+            }
+            Button {
+                text: root.btn_cancel;
+                clicked => { root.cancel_clicked(); }
+            }
+            Button {
+                text: root.btn_apply;
+                clicked => { root.apply_clicked(); }
+            }
+        }
+    }
+}
+
+export component AboutDialog inherits Window {
+    title: root.dialog_title;
+    preferred-width: 460px;
+    preferred-height: 420px;
+
+    in property <string> dialog_title;
+    in property <string> body_text;
+    in property <string> btn_close;
+
+    callback close_clicked();
+
+    VerticalBox {
+        padding: 18px;
+        spacing: 14px;
+
+        AboutSlint { }
+
+        Text {
+            text: root.body_text;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalBox {
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: root.btn_close;
+                clicked => { root.close_clicked(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+}

@@ -40,15 +40,3 @@ impl UiModel {
         }
     }
 }
-
-impl Default for UiModel {
-    /// `#[derive(NwgUi)]` requires `Default`. A placeholder model
-    /// is fine — we overwrite it with real data right after `build_ui`.
-    fn default() -> Self {
-        Self {
-            settings: Settings::default(),
-            ext_enabled: [false; EXT_COUNT],
-            preview_enabled: false,
-        }
-    }
-}

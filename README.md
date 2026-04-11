@@ -171,8 +171,10 @@ The Inno Setup installer does not write any CLSID keys directly. It runs `arcthu
 
 Dual-licensed under your choice of [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE).
 
+Third-party components redistributed with `arcthumb-config.exe` are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). In particular, the configuration GUI uses [Slint](https://slint.dev/) under the Slint Royalty-Free License 2.0; attribution is shown via the **About** button inside the settings window.
+
 ## Credits
 
-The idea comes from [CBX Shell](https://www.t800productions.com/) by T800 Productions and [DarkThumbs](http://thumbs.kaioa.com/) by kaioa. The implementation uses [windows-rs](https://github.com/microsoft/windows-rs) for COM, [image](https://github.com/image-rs/image) for decoding, [zip](https://github.com/zip-rs/zip2) / [unrar](https://github.com/muja/unrar.rs) / [sevenz-rust](https://github.com/dyz1990/sevenz-rust) / [tar](https://github.com/alexcrichton/tar-rs) for archives, and [native-windows-gui](https://github.com/gabdube/native-windows-gui) for the configuration dialog.
+The idea comes from [CBX Shell](https://www.t800productions.com/) by T800 Productions and [DarkThumbs](http://thumbs.kaioa.com/) by kaioa. The implementation uses [windows-rs](https://github.com/microsoft/windows-rs) for COM, [image](https://github.com/image-rs/image) for decoding, [zip](https://github.com/zip-rs/zip2) / [unrar](https://github.com/muja/unrar.rs) / [sevenz-rust](https://github.com/dyz1990/sevenz-rust) / [tar](https://github.com/alexcrichton/tar-rs) for archives, and [Slint](https://slint.dev/) for the configuration dialog.
 
 Bug reports and feature requests go to [GitHub Issues](https://github.com/citrussoda-com/ArcThumb/issues).

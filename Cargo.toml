@@ -63,15 +63,12 @@ image = { version = "0.25", default-features = false, features = [
     "jpeg", "png", "gif", "bmp", "tiff", "ico", "webp",
 ] }
 jxl-oxide = { version = "0.11", features = ["image"], optional = true }
-# UI toolkit for the `arcthumb-config` binary.
-# Basic controls (button, label, check-box, radio-button, message-box)
-# are included in the base crate without feature gating. We only opt
-# out of the heavy optional modules we don't need: image-decoder,
-# datetime-picker, rich-textbox, file-dialog, flexbox, etc.
-native-windows-gui = { version = "1.0", default-features = false, features = [
-    "cursor", "message-window", "menu", "frame", "notice",
-] }
-native-windows-derive = "1.0"
+# Slint is the GUI toolkit for the `arcthumb-config` binary. Strings
+# are passed from Rust to the Slint UI via properties for now; the
+# language is picked at startup from the registry override and OS
+# locale. Switching to `@tr(...)` + gettext is a future refactor
+# tracked in TODO.md.
+slint = { version = "1.15", default-features = true }
 # HTTP client for the update checker in arcthumb-config. Blocking API
 # called from a background thread — no async runtime needed. Only
 # referenced from the config binary; LTO strips it from the DLL.
@@ -83,6 +80,10 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 # resolve `GetWindowSubclass` at process start and the exe won't
 # launch. Applies to both the DLL and the exe; the DLL ignores it.
 embed-resource = "2"
+# Compiles `.slint` UI files into Rust code that the binary pulls in
+# via `slint::include_modules!()`. Keep the version in sync with the
+# `slint` runtime crate above.
+slint-build = "1.15"
 
 [dev-dependencies]
 # Integration tests need to call Win32 APIs directly (LoadLibrary,

@@ -1,10 +1,9 @@
-//! Build script: embed a Windows resource file containing the app
-//! manifest for `arcthumb-config.exe`.
+//! Build script: compile the Slint UI for `arcthumb-config.exe` and
+//! embed a Windows resource file containing the app manifest + icon.
 //!
-//! The manifest declares a dependency on Common Controls v6, which
-//! `native-windows-gui` needs at runtime (`GetWindowSubclass` and
-//! friends live in `ComCtl32.dll` v6). Without it, the exe won't
-//! launch on any modern Windows machine.
+//! The manifest declares Per-Monitor DPI v2 and Common Controls v6
+//! so `arcthumb-config.exe` scales correctly on mixed-DPI setups and
+//! picks up the modern visual style.
 //!
 //! Cargo links the compiled `.res` into every output artifact, so
 //! `arcthumb.dll` also carries the manifest. This is harmless —
@@ -15,9 +14,14 @@ fn main() {
     println!("cargo:rerun-if-changed=resources/arcthumb-config.rc");
     println!("cargo:rerun-if-changed=resources/arcthumb-config.manifest");
     println!("cargo:rerun-if-changed=assets/icon.ico");
+    println!("cargo:rerun-if-changed=ui/main.slint");
 
     // On non-Windows targets this is a no-op so `cargo check` on
     // other platforms still works.
     #[cfg(target_os = "windows")]
     embed_resource::compile("resources/arcthumb-config.rc", embed_resource::NONE);
+
+    // Compile the Slint UI for arcthumb-config. Generated Rust code
+    // lands in OUT_DIR and is pulled in by `slint::include_modules!()`.
+    slint_build::compile("ui/main.slint").expect("failed to compile Slint UI");
 }

@@ -5,9 +5,10 @@
 //! 2. OS default locale via `GetUserDefaultLocaleName` — starts with `"ja"` → Japanese.
 //! 3. English fallback.
 //!
-//! The GUI only covers settings (sort order, cover priority, per-extension
-//! toggling). Application install/uninstall is the installer's job and
-//! isn't surfaced here, so the string table stays small.
+//! Strings are handed to the Slint UI at startup via `in` properties.
+//! A future refactor may move them into `.slint` `@tr("...")` with
+//! gettext once the gettext toolchain (`xgettext`/`msgfmt`) is wired
+//! into the build.
 
 use winreg::RegKey;
 use winreg::enums::*;
@@ -24,6 +25,10 @@ pub struct Strings {
     pub btn_cancel: &'static str,
     pub btn_apply: &'static str,
     pub btn_regenerate: &'static str,
+    pub btn_about: &'static str,
+    pub btn_close: &'static str,
+    pub about_title: &'static str,
+    pub about_body: &'static str,
     pub regen_confirm: &'static str,
     pub regen_done: &'static str,
     pub regen_partial: &'static str,
@@ -40,12 +45,8 @@ pub struct Strings {
 
 pub const EN: Strings = Strings {
     window_title: "ArcThumb Configuration",
-    // Group-title strings carry 4 leading + 1 trailing spaces so
-    // the label background extends noticeably to the left of the
-    // visible text (and only barely past its right edge) when
-    // painted over the frame's top border.
-    group_extensions: "    Enabled extensions ",
-    group_sort: "    Sort order ",
+    group_extensions: "Enabled extensions",
+    group_sort: "Sort order",
     sort_natural: "Natural (page2 < page10)",
     sort_alphabetical: "Alphabetical",
     cb_prefer_cover: "Prefer cover / folder / thumb / thumbnail / front",
@@ -54,6 +55,10 @@ pub const EN: Strings = Strings {
     btn_cancel: "Cancel",
     btn_apply: "Apply",
     btn_regenerate: "Regenerate thumbnails",
+    btn_about: "About",
+    btn_close: "Close",
+    about_title: "About ArcThumb",
+    about_body: "ArcThumb — archive thumbnail provider for Windows Explorer.\n\nThis application uses Slint (https://slint.dev) under the Slint Royalty-Free License 2.0.",
     regen_confirm: "This will close all Explorer windows, delete the Windows thumbnail and icon caches, and restart Explorer.\n\nUse this if archive thumbnails are still missing after installing or enabling new file types.\n\nContinue?",
     regen_done: "Thumbnail cache cleared and Explorer restarted.\n\nNew thumbnails will be generated as you browse.",
     regen_partial: "Some cache files were locked and could not be deleted. Try closing other applications and run this again.",
@@ -68,8 +73,8 @@ pub const EN: Strings = Strings {
 
 pub const JA: Strings = Strings {
     window_title: "ArcThumb 設定",
-    group_extensions: "    有効にする拡張子 ",
-    group_sort: "    並び順 ",
+    group_extensions: "有効にする拡張子",
+    group_sort: "並び順",
     sort_natural: "自然順 (page2 < page10)",
     sort_alphabetical: "アルファベット順",
     cb_prefer_cover: "cover / folder / thumb / thumbnail / front を優先",
@@ -78,6 +83,10 @@ pub const JA: Strings = Strings {
     btn_cancel: "キャンセル",
     btn_apply: "適用",
     btn_regenerate: "サムネイルを再生成",
+    btn_about: "バージョン情報",
+    btn_close: "閉じる",
+    about_title: "ArcThumb について",
+    about_body: "ArcThumb — Windows エクスプローラー向けのアーカイブサムネイル プロバイダー。\n\nこのアプリケーションは Slint (https://slint.dev) を Slint Royalty-Free License 2.0 に基づいて使用しています。",
     regen_confirm: "エクスプローラーのウィンドウをすべて閉じ、Windows のサムネイル/アイコンキャッシュを削除してエクスプローラーを再起動します。\n\nインストール後や対応拡張子を有効にしたあとでサムネイルが表示されない場合に使ってください。\n\n続行しますか？",
     regen_done: "サムネイルキャッシュを削除し、エクスプローラーを再起動しました。\n\nフォルダを開くと新しいサムネイルが作成されます。",
     regen_partial: "一部のキャッシュファイルがロックされていて削除できませんでした。他のアプリを閉じてから、もう一度実行してください。",
@@ -93,13 +102,13 @@ pub const JA: Strings = Strings {
 /// Resolve the UI language to use right now.
 pub fn current() -> &'static Strings {
     // 1. Registry override
-    if let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey("Software\\ArcThumb") {
-        if let Ok(lang) = key.get_value::<String, _>("Language") {
-            match lang.to_ascii_lowercase().as_str() {
-                "en" | "english" => return &EN,
-                "ja" | "japanese" | "jp" => return &JA,
-                _ => {}
-            }
+    if let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey("Software\\ArcThumb")
+        && let Ok(lang) = key.get_value::<String, _>("Language")
+    {
+        match lang.to_ascii_lowercase().as_str() {
+            "en" | "english" => return &EN,
+            "ja" | "japanese" | "jp" => return &JA,
+            _ => {}
         }
     }
 
