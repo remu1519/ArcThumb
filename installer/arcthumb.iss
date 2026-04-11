@@ -17,7 +17,7 @@
 ; to clean up the registry, then removes the files.
 
 #define MyAppName       "ArcThumb"
-#define MyAppVersion    "0.3.2"
+#define MyAppVersion    "0.4.0"
 #define MyAppPublisher  "citrussoda-com"
 #define MyAppURL        "https://github.com/citrussoda-com/ArcThumb"
 #define MyAppExeName    "arcthumb-config.exe"
