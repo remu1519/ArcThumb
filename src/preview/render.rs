@@ -8,13 +8,14 @@ use std::sync::OnceLock;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, COLOR_WINDOW, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject,
-    EndPaint, FillRect, GetSysColor, HBITMAP, HBRUSH, HGDIOBJ, PAINTSTRUCT, SRCCOPY, SelectObject,
+    EndPaint, FillRect, GetSysColor, HBITMAP, HBRUSH, HGDIOBJ, PAINTSTRUCT, SRCCOPY,
+    STRETCH_HALFTONE, SelectObject, SetStretchBltMode, StretchBlt,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, DefWindowProcW, GWLP_USERDATA, GetClientRect,
-    GetWindowLongPtrW, IDC_ARROW, LoadCursorW, RegisterClassExW, SetWindowLongPtrW, WM_DESTROY,
-    WM_ERASEBKGND, WM_NCCREATE, WM_PAINT, WNDCLASSEXW,
+    GetWindowLongPtrW, IDC_ARROW, KillTimer, LoadCursorW, RegisterClassExW, SetTimer,
+    SetWindowLongPtrW, WM_DESTROY, WM_ERASEBKGND, WM_NCCREATE, WM_PAINT, WM_TIMER, WNDCLASSEXW,
 };
 use windows::core::{PCWSTR, w};
 
@@ -69,6 +70,13 @@ pub(super) fn register_window_class() -> u16 {
 // Window procedure + paint
 // =============================================================================
 
+/// Timer ID for the resize debounce timer.
+const DEBOUNCE_TIMER_ID: usize = 1;
+/// Delay in milliseconds before committing a resize after the last
+/// WM_PAINT with a changed size. Short enough to feel responsive,
+/// long enough to skip intermediate frames during a drag.
+const DEBOUNCE_DELAY_MS: u32 = 80;
+
 unsafe extern "system" fn preview_wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -87,28 +95,28 @@ unsafe extern "system" fn preview_wnd_proc(
             }
             WM_PAINT => {
                 let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const ArcThumbPreviewHandler;
-                // Wrap the body in catch_unwind so a panic in resize/GDI
-                // can't escape into prevhost's window message loop.
                 let _ = catch_unwind(AssertUnwindSafe(|| {
                     if !ptr.is_null() {
-                        paint(hwnd, &*ptr);
+                        paint(hwnd, &*ptr, false);
                     } else {
-                        // No user state — at least clear the background
-                        // so the pane isn't garbage.
-                        let mut ps = PAINTSTRUCT::default();
-                        let hdc = BeginPaint(hwnd, &mut ps);
-                        let mut rc = RECT::default();
-                        let _ = GetClientRect(hwnd, &mut rc);
-                        let brush = system_window_brush();
-                        FillRect(hdc, &rc, brush);
-                        let _ = DeleteObject(HGDIOBJ(brush.0));
-                        let _ = EndPaint(hwnd, &ps);
+                        paint_empty(hwnd);
+                    }
+                }));
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == DEBOUNCE_TIMER_ID => {
+                let _ = KillTimer(hwnd, DEBOUNCE_TIMER_ID);
+                let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const ArcThumbPreviewHandler;
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    if !ptr.is_null() {
+                        paint(hwnd, &*ptr, true);
                     }
                 }));
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1), // we erase in WM_PAINT
             WM_DESTROY => {
+                let _ = KillTimer(hwnd, DEBOUNCE_TIMER_ID);
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 LRESULT(0)
             }
@@ -126,7 +134,26 @@ fn system_window_brush() -> HBRUSH {
     unsafe { CreateSolidBrush(COLORREF(color)) }
 }
 
-fn paint(hwnd: HWND, this: &ArcThumbPreviewHandler) {
+/// Paint with no user state — clear to the system window colour.
+fn paint_empty(hwnd: HWND) {
+    let mut ps = PAINTSTRUCT::default();
+    let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+    let mut rc = RECT::default();
+    let _ = unsafe { GetClientRect(hwnd, &mut rc) };
+    let brush = system_window_brush();
+    unsafe { FillRect(hdc, &rc, brush) };
+    unsafe {
+        let _ = DeleteObject(HGDIOBJ(brush.0));
+    }
+    let _ = unsafe { EndPaint(hwnd, &ps) };
+}
+
+/// Paint the preview image. When `commit` is true (fired by
+/// WM_TIMER), build a pixel-perfect bitmap at the current size.
+/// When false (WM_PAINT during drag-resize), either reuse the
+/// cache if size matches, or stretch the stale cache and schedule
+/// a debounced rebuild.
+fn paint(hwnd: HWND, this: &ArcThumbPreviewHandler, commit: bool) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
 
@@ -142,17 +169,20 @@ fn paint(hwnd: HWND, this: &ArcThumbPreviewHandler) {
         let _ = DeleteObject(HGDIOBJ(brush.0));
     }
 
-    // Build (or reuse) the cached bitmap for the current size.
     let source = this.source.borrow();
     if let Some(img) = source.as_ref() {
         let (dest_w, dest_h, off_x, off_y) = fit_inside(img.width(), img.height(), cw, ch);
         if dest_w > 0 && dest_h > 0 {
             let mut cache = this.cache.borrow_mut();
-            let needs_rebuild = cache
+            let size_matches = cache
                 .as_ref()
-                .map(|c| c.width != dest_w || c.height != dest_h)
-                .unwrap_or(true);
-            if needs_rebuild {
+                .is_some_and(|c| c.width == dest_w && c.height == dest_h);
+
+            if size_matches {
+                // Exact match — blit directly, no timer needed.
+                blit_cached(hdc, cache.as_ref().unwrap(), off_x, off_y);
+            } else if commit {
+                // Timer fired — build the pixel-perfect bitmap now.
                 let resized = img
                     .resize_exact(
                         dest_w as u32,
@@ -166,21 +196,55 @@ fn paint(hwnd: HWND, this: &ArcThumbPreviewHandler) {
                         height: dest_h,
                         hbitmap: hbmp,
                     });
+                    blit_cached(hdc, cache.as_ref().unwrap(), off_x, off_y);
                 }
-            }
-            if let Some(c) = cache.as_ref() {
+            } else {
+                // Mid-drag — stretch the stale cache as a placeholder
+                // and schedule a debounced rebuild.
+                if let Some(c) = cache.as_ref() {
+                    stretch_cached(hdc, c, off_x, off_y, dest_w, dest_h);
+                }
                 unsafe {
-                    let mem_dc = CreateCompatibleDC(hdc);
-                    let old = SelectObject(mem_dc, HGDIOBJ(c.hbitmap.0));
-                    let _ = BitBlt(hdc, off_x, off_y, c.width, c.height, mem_dc, 0, 0, SRCCOPY);
-                    SelectObject(mem_dc, old);
-                    let _ = DeleteDC(mem_dc);
+                    let _ = SetTimer(hwnd, DEBOUNCE_TIMER_ID, DEBOUNCE_DELAY_MS, None);
                 }
             }
         }
     }
 
     let _ = unsafe { EndPaint(hwnd, &ps) };
+}
+
+/// BitBlt a cached bitmap at its native size.
+fn blit_cached(hdc: windows::Win32::Graphics::Gdi::HDC, c: &CachedBitmap, x: i32, y: i32) {
+    unsafe {
+        let mem_dc = CreateCompatibleDC(hdc);
+        let old = SelectObject(mem_dc, HGDIOBJ(c.hbitmap.0));
+        let _ = BitBlt(hdc, x, y, c.width, c.height, mem_dc, 0, 0, SRCCOPY);
+        SelectObject(mem_dc, old);
+        let _ = DeleteDC(mem_dc);
+    }
+}
+
+/// StretchBlt a cached bitmap to a different size (fast placeholder
+/// during drag-resize).
+fn stretch_cached(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    c: &CachedBitmap,
+    x: i32,
+    y: i32,
+    dest_w: i32,
+    dest_h: i32,
+) {
+    unsafe {
+        let mem_dc = CreateCompatibleDC(hdc);
+        let old = SelectObject(mem_dc, HGDIOBJ(c.hbitmap.0));
+        let _ = SetStretchBltMode(hdc, STRETCH_HALFTONE);
+        let _ = StretchBlt(
+            hdc, x, y, dest_w, dest_h, mem_dc, 0, 0, c.width, c.height, SRCCOPY,
+        );
+        SelectObject(mem_dc, old);
+        let _ = DeleteDC(mem_dc);
+    }
 }
 
 /// Aspect-fit `(src_w, src_h)` inside a `(box_w, box_h)` rectangle,
