@@ -1,15 +1,18 @@
 // Slint UI for arcthumb-config.exe.
 //
-// Two exported components:
-//   * MainWindow — the settings dialog (extensions, sort order,
-//     cover preference, preview-pane toggle, OK/Cancel/Apply).
-//   * AboutDialog — a small About window that embeds `AboutSlint`
-//     to satisfy the Slint Royalty-Free License 2.0 attribution
-//     requirement.
+// Exported components:
+//   * MainWindow    — settings dialog with File / Help menu bar.
+//   * AboutDialog   — embeds `AboutSlint` for the Slint Royalty-Free
+//                     License 2.0 attribution. Reached via Help → About.
+//   * UpdateDialog  — "new version available" prompt with a
+//                     "Skip this version" checkbox. Replaces the old
+//                     three-button MessageBox.
+//   * DonationDialog — "thanks for updating" prompt with a
+//                     "Don't show again" checkbox.
 //
 // All user-visible strings come from the Rust side via `in` properties
-// rather than `@tr("...")`. A future refactor may switch to gettext-
-// backed translations once the build toolchain is wired up.
+// rather than `@tr("...")`. A future refactor may switch to gettext
+// once the build toolchain is wired up.
 
 import {
     AboutSlint,
@@ -23,6 +26,7 @@ import {
 
 export component MainWindow inherits Window {
     title: root.window_title;
+    icon: @image-url("../assets/icon.png");
     preferred-width: 520px;
     preferred-height: 500px;
     min-width: 500px;
@@ -30,6 +34,10 @@ export component MainWindow inherits Window {
 
     // ---- Localized labels (set from Rust at startup) -------------
     in property <string> window_title;
+    in property <string> menu_file;
+    in property <string> menu_file_exit;
+    in property <string> menu_help;
+    in property <string> menu_help_about;
     in property <string> group_extensions;
     in property <string> group_sort;
     in property <string> sort_natural_label;
@@ -40,7 +48,6 @@ export component MainWindow inherits Window {
     in property <string> btn_cancel;
     in property <string> btn_apply;
     in property <string> btn_regenerate;
-    in property <string> btn_about;
 
     // ---- Two-way bindable state ---------------------------------
     in-out property <bool> ext_zip;
@@ -65,6 +72,24 @@ export component MainWindow inherits Window {
     callback apply_clicked();
     callback regenerate_clicked();
     callback about_clicked();
+    callback exit_clicked();
+
+    MenuBar {
+        Menu {
+            title: root.menu_file;
+            MenuItem {
+                title: root.menu_file_exit;
+                activated => { root.exit_clicked(); }
+            }
+        }
+        Menu {
+            title: root.menu_help;
+            MenuItem {
+                title: root.menu_help_about;
+                activated => { root.about_clicked(); }
+            }
+        }
+    }
 
     VerticalBox {
         padding: 14px;
@@ -128,10 +153,6 @@ export component MainWindow inherits Window {
                 text: root.btn_regenerate;
                 clicked => { root.regenerate_clicked(); }
             }
-            Button {
-                text: root.btn_about;
-                clicked => { root.about_clicked(); }
-            }
             Rectangle { horizontal-stretch: 1; }
             Button {
                 text: root.btn_ok;
@@ -152,6 +173,7 @@ export component MainWindow inherits Window {
 
 export component AboutDialog inherits Window {
     title: root.dialog_title;
+    icon: @image-url("../assets/icon.png");
     preferred-width: 460px;
     preferred-height: 420px;
 
@@ -182,6 +204,104 @@ export component AboutDialog inherits Window {
                 clicked => { root.close_clicked(); }
             }
             Rectangle { horizontal-stretch: 1; }
+        }
+    }
+}
+
+export component UpdateDialog inherits Window {
+    title: root.dialog_title;
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 440px;
+    preferred-height: 220px;
+
+    in property <string> dialog_title;
+    in property <string> message_text;
+    in property <string> skip_checkbox_label;
+    in property <string> btn_open;
+    in property <string> btn_later;
+
+    in-out property <bool> skip_checked: false;
+
+    callback open_clicked();
+    callback later_clicked();
+
+    VerticalBox {
+        padding: 18px;
+        spacing: 14px;
+
+        Text {
+            text: root.message_text;
+            wrap: word-wrap;
+        }
+
+        CheckBox {
+            text: root.skip_checkbox_label;
+            checked <=> root.skip_checked;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalBox {
+            spacing: 6px;
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: root.btn_open;
+                primary: true;
+                clicked => { root.open_clicked(); }
+            }
+            Button {
+                text: root.btn_later;
+                clicked => { root.later_clicked(); }
+            }
+        }
+    }
+}
+
+export component DonationDialog inherits Window {
+    title: root.dialog_title;
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 440px;
+    preferred-height: 220px;
+
+    in property <string> dialog_title;
+    in property <string> message_text;
+    in property <string> dont_show_label;
+    in property <string> btn_sponsor;
+    in property <string> btn_later;
+
+    in-out property <bool> dont_show_checked: false;
+
+    callback sponsor_clicked();
+    callback later_clicked();
+
+    VerticalBox {
+        padding: 18px;
+        spacing: 14px;
+
+        Text {
+            text: root.message_text;
+            wrap: word-wrap;
+        }
+
+        CheckBox {
+            text: root.dont_show_label;
+            checked <=> root.dont_show_checked;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalBox {
+            spacing: 6px;
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: root.btn_sponsor;
+                primary: true;
+                clicked => { root.sponsor_clicked(); }
+            }
+            Button {
+                text: root.btn_later;
+                clicked => { root.later_clicked(); }
+            }
         }
     }
 }

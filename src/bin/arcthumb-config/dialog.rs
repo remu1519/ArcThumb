@@ -8,16 +8,9 @@
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    IDNO, IDOK, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_OKCANCEL,
-    MB_YESNOCANCEL, MessageBoxW,
+    IDOK, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_OKCANCEL, MessageBoxW,
 };
 use windows::core::PCWSTR;
-
-pub enum DialogResult {
-    Yes,
-    No,
-    Cancel,
-}
 
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -65,24 +58,4 @@ pub fn confirm_warning(title: &str, content: &str) -> bool {
         )
     };
     result == IDOK
-}
-
-pub fn yes_no_cancel(title: &str, content: &str) -> DialogResult {
-    let title_w = to_wide(title);
-    let content_w = to_wide(content);
-    let result = unsafe {
-        MessageBoxW(
-            hwnd_null(),
-            PCWSTR(content_w.as_ptr()),
-            PCWSTR(title_w.as_ptr()),
-            MB_YESNOCANCEL | MB_ICONINFORMATION,
-        )
-    };
-    if result == IDYES {
-        DialogResult::Yes
-    } else if result == IDNO {
-        DialogResult::No
-    } else {
-        DialogResult::Cancel
-    }
 }

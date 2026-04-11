@@ -3,24 +3,43 @@
 //! The layout and widget tree live in `ui/main.slint`. This module
 //! wires the Slint window to the rest of the binary: loads the
 //! initial model from the registry, pushes it into the Slint
-//! properties, hooks up the button callbacks, and handles modal
-//! prompts via native Win32 `MessageBoxW`.
+//! properties, hooks up the menu and button callbacks, and drives
+//! the modal sub-dialogs (About, Update, Donation).
+//!
+//! ## Sub-dialog lifetime
+//!
+//! Slint windows are not `Send`, so we cannot stash them in any kind
+//! of global lock. Instead, the optional sub-dialog handles live in
+//! `thread_local!` cells — `arcthumb-config` only ever has one UI
+//! thread, so this is safe and lets the closures clear the slot when
+//! the dialog is dismissed.
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use arcthumb::registry;
 use arcthumb::settings::{Settings, SortOrder};
-use slint::{ComponentHandle, SharedString};
+use slint::{ComponentHandle, SharedString, Timer};
 
 use crate::cache;
-use crate::dialog::{self, DialogResult};
+use crate::dialog;
 use crate::dll_path;
 use crate::locale::{self, Strings};
 use crate::state::{EXT_COUNT, UiModel};
 use crate::update;
 
 slint::include_modules!();
+
+// Sub-dialogs are stored on the UI thread so the OK / Close callbacks
+// can drop their own holder. The window itself is `!Send`, so a
+// thread-local is the natural fit (we never have more than one UI
+// thread).
+thread_local! {
+    static ABOUT_DIALOG: RefCell<Option<AboutDialog>> = const { RefCell::new(None) };
+    static UPDATE_DIALOG: RefCell<Option<UpdateDialog>> = const { RefCell::new(None) };
+    static DONATION_DIALOG: RefCell<Option<DonationDialog>> = const { RefCell::new(None) };
+}
 
 /// Launch the settings GUI. Blocks on the Slint event loop.
 pub fn run_gui() -> Result<(), slint::PlatformError> {
@@ -32,11 +51,7 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     push_model(&window, &initial_model);
     let state = Rc::new(RefCell::new(initial_model));
 
-    // Holder keeps the optional About dialog alive while the user is
-    // looking at it. Cleared when the dialog is closed.
-    let about_holder: Rc<RefCell<Option<AboutDialog>>> = Rc::new(RefCell::new(None));
-
-    // OK: apply and close on success.
+    // OK
     {
         let weak = window.as_weak();
         let state = Rc::clone(&state);
@@ -49,7 +64,7 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // Apply: apply but keep the window open.
+    // Apply
     {
         let weak = window.as_weak();
         let state = Rc::clone(&state);
@@ -60,7 +75,7 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // Cancel: hide without touching the registry.
+    // Cancel
     {
         let weak = window.as_weak();
         window.on_cancel_clicked(move || {
@@ -70,24 +85,37 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // Regenerate: wipe the Windows thumbnail cache after confirmation.
+    // Regenerate
     window.on_regenerate_clicked(move || {
         handle_regenerate(strings);
     });
 
-    // About: open the Slint attribution dialog.
+    // Help → About
+    window.on_about_clicked(move || {
+        show_about(strings);
+    });
+
+    // File → Exit
     {
-        let holder = Rc::clone(&about_holder);
-        window.on_about_clicked(move || {
-            show_about(strings, &holder);
+        let weak = window.as_weak();
+        window.on_exit_clicked(move || {
+            if let Some(w) = weak.upgrade() {
+                let _ = w.hide();
+            }
         });
     }
 
-    // Donation prompt — synchronous, runs before the event loop. Only
-    // fires when the user has just upgraded to a newer version.
+    // Donation prompt — fires once after the event loop starts so we
+    // can show a Slint window (which only paints while the loop is
+    // running). `Timer::single_shot` is the associated form that
+    // self-manages: do NOT use `Timer::default().start(...)` here,
+    // because that returns an owned `Timer` whose `Drop` cancels the
+    // timer immediately when the value goes out of scope.
     if let Some(ver) = update::should_show_donation() {
-        show_donation_dialog(&ver, strings);
-        update::record_donation_shown();
+        Timer::single_shot(Duration::ZERO, move || {
+            show_donation_dialog(&ver, strings);
+            update::record_donation_shown();
+        });
     }
 
     // Background update check — non-blocking. The result is marshalled
@@ -104,6 +132,10 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
 
 fn apply_strings(window: &MainWindow, s: &Strings) {
     window.set_window_title(SharedString::from(s.window_title));
+    window.set_menu_file(SharedString::from(s.menu_file));
+    window.set_menu_file_exit(SharedString::from(s.menu_file_exit));
+    window.set_menu_help(SharedString::from(s.menu_help));
+    window.set_menu_help_about(SharedString::from(s.menu_help_about));
     window.set_group_extensions(SharedString::from(s.group_extensions));
     window.set_group_sort(SharedString::from(s.group_sort));
     window.set_sort_natural_label(SharedString::from(s.sort_natural));
@@ -114,7 +146,6 @@ fn apply_strings(window: &MainWindow, s: &Strings) {
     window.set_btn_cancel(SharedString::from(s.btn_cancel));
     window.set_btn_apply(SharedString::from(s.btn_apply));
     window.set_btn_regenerate(SharedString::from(s.btn_regenerate));
-    window.set_btn_about(SharedString::from(s.btn_about));
 }
 
 fn push_model(window: &MainWindow, model: &UiModel) {
@@ -302,9 +333,11 @@ fn handle_regenerate(strings: &Strings) {
 // About dialog — Slint window so we can embed `AboutSlint`.
 // =============================================================================
 
-fn show_about(strings: &Strings, holder: &Rc<RefCell<Option<AboutDialog>>>) {
-    // If one is already open, bring focus to it rather than stacking.
-    if holder.borrow().is_some() {
+fn show_about(strings: &Strings) {
+    // Already open? Do nothing — Slint will keep the existing window
+    // focused. We avoid stacking duplicate dialogs on rapid clicks.
+    let already_open = ABOUT_DIALOG.with(|h| h.borrow().is_some());
+    if already_open {
         return;
     }
 
@@ -317,32 +350,21 @@ fn show_about(strings: &Strings, holder: &Rc<RefCell<Option<AboutDialog>>>) {
     dialog.set_btn_close(SharedString::from(strings.btn_close));
 
     let weak = dialog.as_weak();
-    let holder_clone = Rc::clone(holder);
     dialog.on_close_clicked(move || {
         if let Some(w) = weak.upgrade() {
             let _ = w.hide();
         }
-        // Drop our strong reference so the dialog is reclaimed.
-        *holder_clone.borrow_mut() = None;
+        ABOUT_DIALOG.with(|h| *h.borrow_mut() = None);
     });
 
     if dialog.show().is_ok() {
-        *holder.borrow_mut() = Some(dialog);
+        ABOUT_DIALOG.with(|h| *h.borrow_mut() = Some(dialog));
     }
 }
 
 // =============================================================================
-// Update check / donation prompt — MessageBox-based.
+// Update dialog — Slint window with a "Skip this version" checkbox.
 // =============================================================================
-
-fn show_donation_dialog(version: &str, strings: &Strings) {
-    let body = strings.donation_prompt.replacen("{}", version, 1);
-    match dialog::yes_no_cancel(strings.donation_title, &body) {
-        DialogResult::Yes => update::open_url(update::sponsor_url()),
-        DialogResult::No => update::record_donation_skip(),
-        DialogResult::Cancel => update::dismiss_donation(),
-    }
-}
 
 fn start_update_check(strings: &'static Strings) {
     std::thread::spawn(move || {
@@ -355,23 +377,130 @@ fn start_update_check(strings: &'static Strings) {
         if update::is_version_skipped(&info.latest_version) {
             return;
         }
-        // Marshal the prompt back to the UI thread so the MessageBox
-        // is owned by the main thread like the rest of the GUI.
+        // Marshal the prompt back to the UI thread so the Slint
+        // window is owned by the same thread as the rest of the GUI.
         let _ = slint::invoke_from_event_loop(move || {
-            show_update_dialog(&info, strings);
+            show_update_dialog(info, strings);
         });
     });
 }
 
-fn show_update_dialog(info: &update::UpdateInfo, strings: &Strings) {
+fn show_update_dialog(info: update::UpdateInfo, strings: &'static Strings) {
+    let already_open = UPDATE_DIALOG.with(|h| h.borrow().is_some());
+    if already_open {
+        return;
+    }
+
+    let dialog = match UpdateDialog::new() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+
     let header = strings
         .update_available
         .replacen("{}", &info.latest_version, 1)
         .replacen("{}", update::current_version(), 1);
-    let content = format!("{header}\n\n{}", strings.update_prompt);
-    match dialog::yes_no_cancel("ArcThumb", &content) {
-        DialogResult::Yes => update::open_url(&info.release_url),
-        DialogResult::No => update::skip_version(&info.latest_version),
-        DialogResult::Cancel => {}
+
+    dialog.set_dialog_title(SharedString::from(strings.update_title));
+    dialog.set_message_text(SharedString::from(header));
+    dialog.set_skip_checkbox_label(SharedString::from(strings.update_skip_checkbox));
+    dialog.set_btn_open(SharedString::from(strings.update_btn_open));
+    dialog.set_btn_later(SharedString::from(strings.update_btn_later));
+
+    // Open download page. Honors the skip checkbox so the user can
+    // both grab the new version and tell us not to remind them again.
+    {
+        let weak = dialog.as_weak();
+        let release_url = info.release_url.clone();
+        let latest_version = info.latest_version.clone();
+        dialog.on_open_clicked(move || {
+            if let Some(d) = weak.upgrade() {
+                if d.get_skip_checked() {
+                    update::skip_version(&latest_version);
+                }
+                let _ = d.hide();
+            }
+            update::open_url(&release_url);
+            UPDATE_DIALOG.with(|h| *h.borrow_mut() = None);
+        });
+    }
+
+    // Remind me later. Same checkbox handling, no URL.
+    {
+        let weak = dialog.as_weak();
+        let latest_version = info.latest_version.clone();
+        dialog.on_later_clicked(move || {
+            if let Some(d) = weak.upgrade() {
+                if d.get_skip_checked() {
+                    update::skip_version(&latest_version);
+                }
+                let _ = d.hide();
+            }
+            UPDATE_DIALOG.with(|h| *h.borrow_mut() = None);
+        });
+    }
+
+    if dialog.show().is_ok() {
+        UPDATE_DIALOG.with(|h| *h.borrow_mut() = Some(dialog));
+    }
+}
+
+// =============================================================================
+// Donation dialog — Slint window with a "Don't show again" checkbox.
+// =============================================================================
+
+fn show_donation_dialog(version: &str, strings: &'static Strings) {
+    let already_open = DONATION_DIALOG.with(|h| h.borrow().is_some());
+    if already_open {
+        return;
+    }
+
+    let dialog = match DonationDialog::new() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+
+    let body = strings.donation_prompt.replacen("{}", version, 1);
+
+    dialog.set_dialog_title(SharedString::from(strings.donation_title));
+    dialog.set_message_text(SharedString::from(body));
+    dialog.set_dont_show_label(SharedString::from(strings.donation_dont_show_checkbox));
+    dialog.set_btn_sponsor(SharedString::from(strings.donation_btn_sponsor));
+    dialog.set_btn_later(SharedString::from(strings.donation_btn_later));
+
+    // Open sponsor page. The "don't show again" checkbox is a hard
+    // dismissal — record it so the prompt never fires again.
+    {
+        let weak = dialog.as_weak();
+        dialog.on_sponsor_clicked(move || {
+            if let Some(d) = weak.upgrade() {
+                if d.get_dont_show_checked() {
+                    update::dismiss_donation();
+                }
+                let _ = d.hide();
+            }
+            update::open_url(update::sponsor_url());
+            DONATION_DIALOG.with(|h| *h.borrow_mut() = None);
+        });
+    }
+
+    // Maybe next time. Honors the dismiss checkbox the same way.
+    {
+        let weak = dialog.as_weak();
+        dialog.on_later_clicked(move || {
+            if let Some(d) = weak.upgrade() {
+                if d.get_dont_show_checked() {
+                    update::dismiss_donation();
+                } else {
+                    update::record_donation_skip();
+                }
+                let _ = d.hide();
+            }
+            DONATION_DIALOG.with(|h| *h.borrow_mut() = None);
+        });
+    }
+
+    if dialog.show().is_ok() {
+        DONATION_DIALOG.with(|h| *h.borrow_mut() = Some(dialog));
     }
 }

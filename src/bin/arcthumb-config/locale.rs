@@ -15,6 +15,10 @@ use winreg::enums::*;
 
 pub struct Strings {
     pub window_title: &'static str,
+    pub menu_file: &'static str,
+    pub menu_file_exit: &'static str,
+    pub menu_help: &'static str,
+    pub menu_help_about: &'static str,
     pub group_extensions: &'static str,
     pub group_sort: &'static str,
     pub sort_natural: &'static str,
@@ -25,7 +29,6 @@ pub struct Strings {
     pub btn_cancel: &'static str,
     pub btn_apply: &'static str,
     pub btn_regenerate: &'static str,
-    pub btn_about: &'static str,
     pub btn_close: &'static str,
     pub about_title: &'static str,
     pub about_body: &'static str,
@@ -35,16 +38,26 @@ pub struct Strings {
     pub error_title: &'static str,
     pub error_save: &'static str,
     pub error_register: &'static str,
-    // Update check
+    // Update check dialog
+    pub update_title: &'static str,
     pub update_available: &'static str,
-    pub update_prompt: &'static str,
-    // Donation prompt
+    pub update_skip_checkbox: &'static str,
+    pub update_btn_open: &'static str,
+    pub update_btn_later: &'static str,
+    // Donation dialog
     pub donation_title: &'static str,
     pub donation_prompt: &'static str,
+    pub donation_dont_show_checkbox: &'static str,
+    pub donation_btn_sponsor: &'static str,
+    pub donation_btn_later: &'static str,
 }
 
 pub const EN: Strings = Strings {
     window_title: "ArcThumb Configuration",
+    menu_file: "File",
+    menu_file_exit: "Exit",
+    menu_help: "Help",
+    menu_help_about: "About ArcThumb",
     group_extensions: "Enabled extensions",
     group_sort: "Sort order",
     sort_natural: "Natural (page2 < page10)",
@@ -55,7 +68,6 @@ pub const EN: Strings = Strings {
     btn_cancel: "Cancel",
     btn_apply: "Apply",
     btn_regenerate: "Regenerate thumbnails",
-    btn_about: "About",
     btn_close: "Close",
     about_title: "About ArcThumb",
     about_body: "ArcThumb — archive thumbnail provider for Windows Explorer.\n\nThis application uses Slint (https://slint.dev) under the Slint Royalty-Free License 2.0.",
@@ -65,14 +77,24 @@ pub const EN: Strings = Strings {
     error_title: "ArcThumb",
     error_save: "Failed to save settings to the registry.",
     error_register: "Failed to update shell extension registration.",
+    update_title: "Update available",
     update_available: "A new version of ArcThumb is available: v{}  (current: v{})",
-    update_prompt: "[Yes] Open download page\n[No] Skip this version\n[Cancel] Remind me later",
+    update_skip_checkbox: "Skip this version",
+    update_btn_open: "Open download page",
+    update_btn_later: "Remind me later",
     donation_title: "Thank you for updating!",
-    donation_prompt: "ArcThumb has been updated to v{}.\nWould you like to support development?\n\n[Yes] Open sponsor page\n[No] Maybe next time\n[Cancel] Don't show again",
+    donation_prompt: "ArcThumb has been updated to v{}.\nWould you like to support development?",
+    donation_dont_show_checkbox: "Don't show this again",
+    donation_btn_sponsor: "Open sponsor page",
+    donation_btn_later: "Maybe next time",
 };
 
 pub const JA: Strings = Strings {
     window_title: "ArcThumb 設定",
+    menu_file: "ファイル",
+    menu_file_exit: "終了",
+    menu_help: "ヘルプ",
+    menu_help_about: "ArcThumb について",
     group_extensions: "有効にする拡張子",
     group_sort: "並び順",
     sort_natural: "自然順 (page2 < page10)",
@@ -83,7 +105,6 @@ pub const JA: Strings = Strings {
     btn_cancel: "キャンセル",
     btn_apply: "適用",
     btn_regenerate: "サムネイルを再生成",
-    btn_about: "バージョン情報",
     btn_close: "閉じる",
     about_title: "ArcThumb について",
     about_body: "ArcThumb — Windows エクスプローラー向けのアーカイブサムネイル プロバイダー。\n\nこのアプリケーションは Slint (https://slint.dev) を Slint Royalty-Free License 2.0 に基づいて使用しています。",
@@ -93,10 +114,16 @@ pub const JA: Strings = Strings {
     error_title: "ArcThumb",
     error_save: "設定の保存に失敗しました。",
     error_register: "シェル拡張の登録状態の更新に失敗しました。",
+    update_title: "アップデート通知",
     update_available: "ArcThumb の新しいバージョンがあります: v{}  (現在: v{})",
-    update_prompt: "[はい] ダウンロードページを開く\n[いいえ] このバージョンをスキップ\n[キャンセル] あとで通知",
+    update_skip_checkbox: "このバージョンをスキップ",
+    update_btn_open: "ダウンロードページを開く",
+    update_btn_later: "あとで通知",
     donation_title: "アップデートありがとうございます！",
-    donation_prompt: "ArcThumb v{} にアップデートされました。\n開発を支援しますか？\n\n[はい] スポンサーページを開く\n[いいえ] また今度\n[キャンセル] 今後表示しない",
+    donation_prompt: "ArcThumb v{} にアップデートされました。\n開発を支援しますか？",
+    donation_dont_show_checkbox: "今後表示しない",
+    donation_btn_sponsor: "スポンサーページを開く",
+    donation_btn_later: "また今度",
 };
 
 /// Resolve the UI language to use right now.
