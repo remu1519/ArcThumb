@@ -37,9 +37,13 @@ export component MainWindow inherits Window {
     title: root.window_title;
     icon: @image-url("../assets/icon.png");
     preferred-width: 520px;
-    preferred-height: 500px;
+    // Tuned so the bottom-row buttons sit a comfortable 12-16 px
+    // below "Enable preview pane" at default size. Larger windows
+    // grow that gap because the spacer Rectangle below has
+    // `vertical-stretch: 1`; the floor is set by `min-height`.
+    preferred-height: 430px;
     min-width: 500px;
-    min-height: 480px;
+    min-height: 410px;
 
     // ---- Localized labels (set from Rust at startup) -------------
     in property <string> window_title;
@@ -96,20 +100,35 @@ export component MainWindow inherits Window {
         }
     }
 
+    // Layout note (resize behaviour):
+    //
+    // `VerticalBox` distributes leftover height to children with
+    // `vertical-stretch > 0`. By default *every* child gets some,
+    // which made the GroupBox internals balloon and the ComboBox
+    // grow taller as the window resized. We pin every content
+    // widget to `vertical-stretch: 0` so they keep their natural
+    // height, and put a single stretchy spacer just above the
+    // button row to absorb all extra vertical space. The result:
+    // section internals stay tight, the gap between content and
+    // the footer is the only thing that grows on resize.
     VerticalBox {
         padding: 14px;
         spacing: 12px;
 
         GroupBox {
+            vertical-stretch: 0;
             title: root.group_extensions;
-            // Single-column list of every entry in the model. We
-            // moved away from a 4-wide grid because Slint's `for`
-            // construct does not naturally produce row-major grids
-            // without an external layout helper, and a vertical
-            // list keeps the file short and resizable.
-            VerticalBox {
-                spacing: 4px;
+            // 4 columns wide, row-major. We compute the row/col
+            // from the iteration index `i` so the layout follows
+            // `arcthumb::registry::EXTENSIONS` order automatically.
+            // `Math.floor` and `Math.mod` are needed because Slint
+            // returns a float from `int / int`.
+            GridLayout {
+                spacing: 6px;
                 for entry[i] in root.extensions: CheckBox {
+                    row: Math.floor(i / 4);
+                    col: Math.mod(i, 4);
+                    vertical-stretch: 0;
                     text: entry.name;
                     checked: entry.enabled;
                     toggled => {
@@ -120,8 +139,10 @@ export component MainWindow inherits Window {
         }
 
         GroupBox {
+            vertical-stretch: 0;
             title: root.group_sort;
             ComboBox {
+                vertical-stretch: 0;
                 model: [root.sort_natural_label, root.sort_alpha_label];
                 current-index: root.sort_natural ? 0 : 1;
                 selected(current) => {
@@ -131,19 +152,23 @@ export component MainWindow inherits Window {
         }
 
         CheckBox {
+            vertical-stretch: 0;
             text: root.prefer_cover_label;
             checked <=> root.prefer_cover;
         }
 
         CheckBox {
+            vertical-stretch: 0;
             text: root.enable_preview_label;
             checked <=> root.enable_preview;
         }
 
-        // Flexible spacer so the button row sticks to the bottom.
+        // The only stretchy element. Absorbs all extra height when
+        // the window is resized so nothing above grows internally.
         Rectangle { vertical-stretch: 1; }
 
         HorizontalBox {
+            vertical-stretch: 0;
             spacing: 6px;
             Button {
                 text: root.btn_regenerate;
