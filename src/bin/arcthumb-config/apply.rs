@@ -228,11 +228,16 @@ mod tests {
         let mut ext = [false; EXT_COUNT];
         ext[0] = true; // .zip
         ext[1] = true; // .cbz
+        let settings = Settings {
+            sort_order: SortOrder::Natural,
+            prefer_cover_names: true,
+            ..Settings::default()
+        };
         UiModel {
-            settings: Settings {
-                sort_order: SortOrder::Natural,
-                prefer_cover_names: true,
-            },
+            image_ext_enabled: crate::state::image_ext_mask_to_vec(
+                settings.enabled_image_exts_mask,
+            ),
+            settings,
             ext_enabled: ext,
             preview_enabled: false,
         }
@@ -258,6 +263,7 @@ mod tests {
         let new_settings = Settings {
             sort_order: SortOrder::Alphabetical,
             prefer_cover_names: true,
+            ..model.settings
         };
         let plan = compute_apply_plan(&model, new_settings, model.ext_enabled, false);
         assert_eq!(plan, vec![ApplyAction::SaveSettings(new_settings)]);
@@ -269,6 +275,7 @@ mod tests {
         let new_settings = Settings {
             sort_order: model.settings.sort_order,
             prefer_cover_names: !model.settings.prefer_cover_names,
+            ..model.settings
         };
         let plan = compute_apply_plan(&model, new_settings, model.ext_enabled, false);
         assert_eq!(plan, vec![ApplyAction::SaveSettings(new_settings)]);
@@ -341,6 +348,7 @@ mod tests {
         let new_settings = Settings {
             sort_order: SortOrder::Alphabetical,
             prefer_cover_names: false,
+            ..model.settings
         };
         let mut new_ext = model.ext_enabled;
         new_ext[0] = false; // disable .zip

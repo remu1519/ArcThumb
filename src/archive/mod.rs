@@ -10,7 +10,8 @@
 //!   (we use Seek to rewind between listing and extraction passes)
 //!
 //! "First image" is defined as the alphabetically smallest file whose
-//! extension is in `IMAGE_EXTS`.
+//! extension is in `settings::SUPPORTED_IMAGE_EXTS` AND whose bit is
+//! set in the user's `enabled_image_exts_mask`.
 
 mod fb2;
 mod mobi;
@@ -23,29 +24,18 @@ use std::error::Error;
 use std::io::{Read, Seek, SeekFrom};
 
 use crate::limits;
-
-/// Image extensions we recognise inside archives. Case-insensitive.
-/// Must match what `decode::decode_with_limits` can actually handle —
-/// listing an extension we can't decode would cause us to pick an
-/// unreadable file as the "first image" and fail to produce a
-/// thumbnail at all.
-const IMAGE_EXTS: &[&str] = &[
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".gif",
-    ".bmp",
-    ".tiff",
-    ".tif",
-    ".webp",
-    ".ico",
-    #[cfg(feature = "jxl")]
-    ".jxl",
-];
+use crate::settings::{self, SUPPORTED_IMAGE_EXTS};
 
 pub(crate) fn has_image_ext(name: &str) -> bool {
+    has_image_ext_with_mask(name, settings::current().enabled_image_exts_mask)
+}
+
+fn has_image_ext_with_mask(name: &str, mask: u32) -> bool {
     let lower = name.to_ascii_lowercase();
-    IMAGE_EXTS.iter().any(|ext| lower.ends_with(ext))
+    SUPPORTED_IMAGE_EXTS
+        .iter()
+        .enumerate()
+        .any(|(i, ext)| (mask & (1u32 << i)) != 0 && lower.ends_with(ext))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,6 +185,107 @@ mod tests {
         // so "foopng" must not be treated as a PNG.
         assert!(!has_image_ext("foopng"));
         assert!(!has_image_ext("imagejpg"));
+    }
+
+    #[test]
+    fn mask_disables_specific_extensions() {
+        // Only bit 0 (.jpg) set.
+        assert!(has_image_ext_with_mask("a.jpg", 0b1));
+        assert!(!has_image_ext_with_mask("a.png", 0b1));
+        // All off.
+        assert!(!has_image_ext_with_mask("a.jpg", 0));
+        // Find .png (index 2 in SUPPORTED_IMAGE_EXTS) via only its bit.
+        let png_idx = SUPPORTED_IMAGE_EXTS
+            .iter()
+            .position(|&e| e == ".png")
+            .unwrap();
+        let mask = 1u32 << png_idx;
+        assert!(has_image_ext_with_mask("a.png", mask));
+        assert!(!has_image_ext_with_mask("a.jpg", mask));
+    }
+
+    #[test]
+    fn every_supported_extension_can_be_solo_enabled() {
+        // For each supported extension, build a mask with only that
+        // extension's bit set, then verify a file with that extension
+        // is recognised and no other supported extension leaks through.
+        for (i, target_ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
+            let mask = 1u32 << i;
+            let target_name = format!("foo{target_ext}");
+            assert!(
+                has_image_ext_with_mask(&target_name, mask),
+                "{target_ext} should be recognised when its own bit (index {i}) is set"
+            );
+            for (j, other_ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                // `.jpg` / `.jpeg` and `.tif` / `.tiff` overlap by
+                // suffix: `foo.jpeg` ends with `.jpg`? No —
+                // `".jpeg".ends_with(".jpg")` is false. But
+                // `".tiff".ends_with(".tif")` IS true, so a file
+                // named `foo.tiff` with only the `.tif` bit set would
+                // still match. Skip the asymmetric suffix cases so
+                // the test asserts only what `ends_with` can decide.
+                if other_ext.ends_with(target_ext) || target_ext.ends_with(other_ext) {
+                    continue;
+                }
+                let other_name = format!("bar{other_ext}");
+                assert!(
+                    !has_image_ext_with_mask(&other_name, mask),
+                    "{other_ext} must NOT match when only {target_ext} (bit {i}) is set"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_supported_extension_can_be_solo_disabled() {
+        // Inverse: with every bit set EXCEPT one, files of the
+        // disabled extension must be rejected, and every other
+        // extension must still match.
+        let all = crate::settings::default_enabled_image_exts_mask();
+        for (i, target_ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
+            let mask = all & !(1u32 << i);
+            let target_name = format!("foo{target_ext}");
+            // Skip asymmetric suffix overlaps: disabling `.tif`
+            // (index 6) doesn't reject `.tiff` because `.tiff` also
+            // ends with `.tif`'s longer cousin — but in our slice
+            // `.tiff` comes before `.tif`, so a plain `.tif` file
+            // can still match the `.tiff` bit. Assert only when no
+            // other bit could "catch" this extension via ends_with.
+            let another_matches = SUPPORTED_IMAGE_EXTS
+                .iter()
+                .enumerate()
+                .any(|(j, e)| j != i && (mask & (1u32 << j)) != 0 && target_ext.ends_with(e));
+            if another_matches {
+                continue;
+            }
+            assert!(
+                !has_image_ext_with_mask(&target_name, mask),
+                "{target_ext} should be rejected when only its bit (index {i}) is cleared"
+            );
+        }
+        // Sanity: default mask accepts every supported extension.
+        for ext in SUPPORTED_IMAGE_EXTS {
+            let name = format!("foo{ext}");
+            assert!(
+                has_image_ext_with_mask(&name, all),
+                "{ext} should match under the default (all-on) mask"
+            );
+        }
+    }
+
+    #[test]
+    fn mask_matches_are_case_insensitive() {
+        let all = crate::settings::default_enabled_image_exts_mask();
+        for ext in SUPPORTED_IMAGE_EXTS {
+            let upper = format!("FOO{}", ext.to_uppercase());
+            assert!(
+                has_image_ext_with_mask(&upper, all),
+                "uppercase {ext} should still match"
+            );
+        }
     }
 
     #[test]

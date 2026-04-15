@@ -8,8 +8,9 @@
 //!
 //! ```text
 //! HKEY_CURRENT_USER\Software\ArcThumb
-//!     SortOrder        REG_SZ    "natural" | "alphabetical"
-//!     PreferCoverNames REG_DWORD 0 | 1
+//!     SortOrder         REG_SZ    "natural" | "alphabetical"
+//!     PreferCoverNames  REG_DWORD 0 | 1
+//!     EnabledImageExts  REG_DWORD bitmask over SUPPORTED_IMAGE_EXTS
 //! ```
 //!
 //! Users can tweak these by hand in `regedit` until a proper config
@@ -52,6 +53,32 @@ impl SortOrder {
     }
 }
 
+/// Image extensions ArcThumb can decode when extracted from an
+/// archive. This is the fixed compile-time *supported set*; the
+/// user-facing `Settings::enabled_image_exts_mask` picks a subset.
+/// Order is load-bearing: bit `i` of the mask refers to index `i`
+/// here, so never reorder or delete entries — append only.
+pub const SUPPORTED_IMAGE_EXTS: &[&str] = &[
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".bmp",
+    ".tiff",
+    ".tif",
+    ".webp",
+    ".ico",
+    #[cfg(feature = "jxl")]
+    ".jxl",
+];
+
+/// All supported extensions enabled. Used as the factory default and
+/// as the fallback when the registry key is missing or malformed.
+pub const fn default_enabled_image_exts_mask() -> u32 {
+    let n = SUPPORTED_IMAGE_EXTS.len();
+    if n >= 32 { u32::MAX } else { (1u32 << n) - 1 }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     pub sort_order: SortOrder,
@@ -59,6 +86,11 @@ pub struct Settings {
     /// `thumbnail.*`, or `front.*` are preferred over the first
     /// image by sort order.
     pub prefer_cover_names: bool,
+    /// Bitmask over `SUPPORTED_IMAGE_EXTS`: bit `i` set = extension
+    /// at index `i` is eligible as a thumbnail source inside
+    /// archives. Only bits < `SUPPORTED_IMAGE_EXTS.len()` are
+    /// meaningful; higher bits are ignored.
+    pub enabled_image_exts_mask: u32,
 }
 
 impl Default for Settings {
@@ -66,6 +98,7 @@ impl Default for Settings {
         Self {
             sort_order: SortOrder::Natural,
             prefer_cover_names: true,
+            enabled_image_exts_mask: default_enabled_image_exts_mask(),
         }
     }
 }
@@ -89,6 +122,12 @@ impl Settings {
         if let Ok(v) = key.get_value::<u32, _>("PreferCoverNames") {
             out.prefer_cover_names = v != 0;
         }
+        if let Ok(v) = key.get_value::<u32, _>("EnabledImageExts") {
+            // Mask unused high bits so a stale value from a build
+            // with more supported formats can't light up phantom
+            // entries after a downgrade.
+            out.enabled_image_exts_mask = v & default_enabled_image_exts_mask();
+        }
         out
     }
 
@@ -101,6 +140,8 @@ impl Settings {
         key.set_value("SortOrder", &self.sort_order.as_registry_value())?;
         let flag: u32 = if self.prefer_cover_names { 1 } else { 0 };
         key.set_value("PreferCoverNames", &flag)?;
+        let mask = self.enabled_image_exts_mask & default_enabled_image_exts_mask();
+        key.set_value("EnabledImageExts", &mask)?;
         Ok(())
     }
 }
@@ -362,5 +403,33 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.sort_order, SortOrder::Natural);
         assert!(s.prefer_cover_names);
+        assert_eq!(
+            s.enabled_image_exts_mask,
+            default_enabled_image_exts_mask(),
+            "default must enable every supported image extension"
+        );
+    }
+
+    #[test]
+    fn default_image_mask_covers_exactly_supported_length() {
+        let n = SUPPORTED_IMAGE_EXTS.len();
+        let expected = if n >= 32 { u32::MAX } else { (1u32 << n) - 1 };
+        assert_eq!(default_enabled_image_exts_mask(), expected);
+        // Every bit below `n` is set, and every bit at or above `n`
+        // is cleared. The upper-bound check guards against future
+        // silent overflow if the supported list grows past 32.
+        for i in 0..n {
+            assert!(
+                default_enabled_image_exts_mask() & (1u32 << i) != 0,
+                "bit {i} should be set in the default mask"
+            );
+        }
+        for i in n..32 {
+            assert_eq!(
+                default_enabled_image_exts_mask() & (1u32 << i),
+                0,
+                "bit {i} should be clear (beyond supported length)"
+            );
+        }
     }
 }
