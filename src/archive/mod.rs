@@ -13,6 +13,7 @@
 //! extension is in `settings::SUPPORTED_IMAGE_EXTS` AND whose bit is
 //! set in the user's `enabled_image_exts_mask`.
 
+mod detect;
 mod fb2;
 mod mobi;
 mod rar;
@@ -26,84 +27,17 @@ use std::io::{Read, Seek, SeekFrom};
 use crate::limits;
 #[cfg(test)]
 use crate::settings::SUPPORTED_IMAGE_EXTS;
-use crate::settings::{self, Settings};
+use crate::settings::Settings;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Format {
-    Zip,
-    SevenZ,
-    Rar,
-    Tar,
-    /// FictionBook 2 raw XML. Detected by searching for the literal
-    /// `FictionBook` in the first 512 bytes — XML declarations may
-    /// appear before the root element so we can't anchor at start.
-    Fb2,
-    /// Amazon Kindle MOBI / AZW / AZW3. All three are PalmDB
-    /// containers with the type `BOOK` + creator `MOBI` at offset
-    /// 60..68 inside the PalmDB header.
-    Mobi,
-    Unknown,
-}
-
-fn detect_format(magic: &[u8]) -> Format {
-    // ZIP: "PK" followed by \x03\x04 (local file header), \x05\x06 (empty),
-    // or \x07\x08 (spanned).
-    if magic.len() >= 4 && &magic[..2] == b"PK" {
-        let m2 = magic[2];
-        let m3 = magic[3];
-        if (m2 == 3 && m3 == 4) || (m2 == 5 && m3 == 6) || (m2 == 7 && m3 == 8) {
-            return Format::Zip;
-        }
-    }
-    // 7z: "7z\xBC\xAF\x27\x1C"
-    if magic.len() >= 6 && &magic[..6] == b"7z\xBC\xAF\x27\x1C" {
-        return Format::SevenZ;
-    }
-    // RAR 4: "Rar!\x1A\x07\x00"; RAR 5: "Rar!\x1A\x07\x01\x00"
-    if magic.len() >= 7 && &magic[..7] == b"Rar!\x1A\x07\x00" {
-        return Format::Rar;
-    }
-    if magic.len() >= 8 && &magic[..8] == b"Rar!\x1A\x07\x01\x00" {
-        return Format::Rar;
-    }
-    // TAR (ustar): the string "ustar" lives at byte offset 257 inside the
-    // 512-byte header. This covers POSIX ustar and pax archives, which is
-    // what modern tools (including 7-Zip, tar, bsdtar) produce.
-    if magic.len() >= 262 && &magic[257..262] == b"ustar" {
-        return Format::Tar;
-    }
-    // FB2: a single XML document with the literal `FictionBook` root
-    // element. The token is unique enough that false positives are
-    // effectively impossible — no other widely-deployed format mentions
-    // `FictionBook` in its first 512 bytes.
-    if magic.windows(11).any(|w| w == b"FictionBook") {
-        return Format::Fb2;
-    }
-    // MOBI / AZW / AZW3: PalmDB header has type "BOOK" at offset 60
-    // and creator "MOBI" at offset 64. The combined "BOOKMOBI" string
-    // at byte 60 uniquely identifies the format.
-    if magic.len() >= 68 && &magic[60..68] == b"BOOKMOBI" {
-        return Format::Mobi;
-    }
-    Format::Unknown
-}
+use detect::{Format, detect_format};
 
 /// Open an archive stream, pick the first image, return `(name, bytes)`.
 ///
-/// Thin wrapper around [`read_first_image_with`] that uses the
-/// process-wide cached [`Settings`]. Production (the shell
-/// extension) calls this; tests that need explicit control over
-/// sort order or the image-extension mask should call
-/// `read_first_image_with` directly.
-pub fn read_first_image<R: Read + Seek>(reader: R) -> Result<(String, Vec<u8>), Box<dyn Error>> {
-    read_first_image_with(reader, settings::current())
-}
-
-/// Dependency-injected variant: caller chooses which settings
-/// govern image-extension filtering and sort order. All archive
-/// backends route through here — the global-reading `read_first_image`
-/// is the only place that touches `settings::current()`.
-pub fn read_first_image_with<R: Read + Seek>(
+/// The caller supplies the [`Settings`] snapshot that governs
+/// image-extension filtering and sort order. This keeps the
+/// archive module free of global state — the shell extension
+/// obtains settings via [`settings::current()`] and passes them in.
+pub fn read_first_image<R: Read + Seek>(
     mut reader: R,
     settings: &Settings,
 ) -> Result<(String, Vec<u8>), Box<dyn Error>> {
@@ -291,7 +225,7 @@ mod tests {
     #[test]
     fn unknown_format_errors_cleanly() {
         let bytes = b"this is plain text, definitely not an archive".to_vec();
-        let result = read_first_image(Cursor::new(bytes));
+        let result = read_first_image(Cursor::new(bytes), &Settings::default());
         assert!(result.is_err());
     }
 

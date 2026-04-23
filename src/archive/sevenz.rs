@@ -57,6 +57,7 @@ pub(super) fn sevenz_read_first_image<R: Read + Seek>(
 mod tests {
     use super::super::read_first_image;
     use super::super::tests::make_tiny_png;
+    use crate::settings::Settings;
     use std::io::Cursor;
 
     #[test]
@@ -94,7 +95,8 @@ mod tests {
             ("page1.png", &png),
             ("notes.txt", b"text"),
         ]);
-        let (name, bytes) = read_first_image(sz).expect("7z read_first_image");
+        let (name, bytes) =
+            read_first_image(sz, &Settings::default()).expect("7z read_first_image");
         assert_eq!(name, "page1.png");
         // Round-trip the bytes through the decoder to prove they
         // survived the 7z compression cycle intact.
@@ -107,14 +109,14 @@ mod tests {
     fn sevenz_picks_cover_over_sort() {
         let png = make_tiny_png();
         let sz = build_7z(&[("aaa.jpg", &png), ("cover.jpg", &png), ("zzz.jpg", &png)]);
-        let (name, _) = read_first_image(sz).expect("7z read_first_image");
+        let (name, _) = read_first_image(sz, &Settings::default()).expect("7z read_first_image");
         assert_eq!(name, "cover.jpg");
     }
 
     #[test]
     fn sevenz_with_no_images_errors() {
         let sz = build_7z(&[("readme.txt", b"hello"), ("notes.md", b"# md")]);
-        assert!(read_first_image(sz).is_err());
+        assert!(read_first_image(sz, &Settings::default()).is_err());
     }
 
     // ---------------------------------------------------------------
@@ -123,7 +125,6 @@ mod tests {
 
     #[test]
     fn sevenz_mask_excludes_disabled_image_extension() {
-        use super::super::read_first_image_with;
         use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings, default_enabled_image_exts_mask};
 
         let png = make_tiny_png();
@@ -137,13 +138,12 @@ mod tests {
             prefer_cover_names: false,
             ..Settings::default()
         };
-        let (name, _) = read_first_image_with(sz, &settings).expect("mask excludes jpg");
+        let (name, _) = read_first_image(sz, &settings).expect("mask excludes jpg");
         assert_eq!(name, "b.png");
     }
 
     #[test]
     fn sevenz_mask_of_zero_rejects_all_images() {
-        use super::super::read_first_image_with;
         use crate::settings::Settings;
 
         let png = make_tiny_png();
@@ -152,12 +152,11 @@ mod tests {
             enabled_image_exts_mask: 0,
             ..Settings::default()
         };
-        assert!(read_first_image_with(sz, &settings).is_err());
+        assert!(read_first_image(sz, &settings).is_err());
     }
 
     #[test]
     fn sevenz_every_supported_extension_round_trips_when_enabled_alone() {
-        use super::super::read_first_image_with;
         use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings};
 
         let png = make_tiny_png();
@@ -169,7 +168,7 @@ mod tests {
                 prefer_cover_names: false,
                 ..Settings::default()
             };
-            let (name, _) = read_first_image_with(sz, &settings)
+            let (name, _) = read_first_image(sz, &settings)
                 .unwrap_or_else(|e| panic!("7z ext {ext} solo-enabled failed: {e}"));
             assert_eq!(name, entry);
         }

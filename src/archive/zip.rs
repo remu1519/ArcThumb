@@ -93,6 +93,7 @@ pub(super) fn zip_read_first_image<R: Read + Seek>(
 #[cfg(test)]
 mod tests {
     use super::super::{read_first_image, tests::make_tiny_png};
+    use crate::settings::Settings;
     use std::io::Cursor;
 
     // ---------------------------------------------------------------
@@ -162,7 +163,7 @@ mod tests {
             ("cover.jpg", b"COVER"),
             ("readme.txt", b"ignore me"),
         ]);
-        let (name, bytes) = read_first_image(zip).expect("read_first_image");
+        let (name, bytes) = read_first_image(zip, &Settings::default()).expect("read_first_image");
         assert_eq!(name, "cover.jpg");
         assert_eq!(bytes, b"COVER");
     }
@@ -175,7 +176,7 @@ mod tests {
             ("page2.jpg", b"TWO"),
             ("page1.jpg", b"ONE"),
         ]);
-        let (name, bytes) = read_first_image(zip).expect("read_first_image");
+        let (name, bytes) = read_first_image(zip, &Settings::default()).expect("read_first_image");
         assert_eq!(name, "page1.jpg");
         assert_eq!(bytes, b"ONE");
     }
@@ -183,14 +184,14 @@ mod tests {
     #[test]
     fn zip_skips_non_image_files() {
         let zip = build_zip(&[("notes.txt", b"text"), ("only.png", b"PNG_BYTES")]);
-        let (name, _) = read_first_image(zip).expect("read_first_image");
+        let (name, _) = read_first_image(zip, &Settings::default()).expect("read_first_image");
         assert_eq!(name, "only.png");
     }
 
     #[test]
     fn zip_with_no_images_errors() {
         let zip = build_zip(&[("a.txt", b"text"), ("b.md", b"md")]);
-        let result = read_first_image(zip);
+        let result = read_first_image(zip, &Settings::default());
         assert!(
             result.is_err(),
             "expected error, got {:?}",
@@ -207,7 +208,7 @@ mod tests {
         let png = make_tiny_png();
         let fb2 = super::super::tests::build_fb2("c.png", &png);
         let zip = build_zip(&[("book.fb2", &fb2)]);
-        let (name, bytes) = read_first_image(zip).expect("fb2.zip read");
+        let (name, bytes) = read_first_image(zip, &Settings::default()).expect("fb2.zip read");
         assert_eq!(name, "c.png");
         let img = crate::decode::decode_with_limits(&name, &bytes).expect("decode fb2.zip cover");
         assert_eq!(img.width(), 2);
@@ -218,14 +219,14 @@ mod tests {
         let png = make_tiny_png();
         let fb2 = super::super::tests::build_fb2("inside.png", &png);
         let zip = build_zip(&[("book.fb2", &fb2), ("zzz.png", b"not really a png")]);
-        let (name, _) = read_first_image(zip).expect("fb2.zip read");
+        let (name, _) = read_first_image(zip, &Settings::default()).expect("fb2.zip read");
         assert_eq!(name, "inside.png");
     }
 
     #[test]
     fn zip_without_fb2_or_epub_still_uses_generic_scan() {
         let zip = build_zip(&[("page1.jpg", b"data")]);
-        let (name, _) = read_first_image(zip).expect("plain ZIP read");
+        let (name, _) = read_first_image(zip, &Settings::default()).expect("plain ZIP read");
         assert_eq!(name, "page1.jpg");
     }
 
@@ -296,7 +297,7 @@ mod tests {
                 ("OEBPS/images/zzz.png", b"NOT THIS ONE"),
             ],
         );
-        let (name, bytes) = read_first_image(epub).expect("EPUB read");
+        let (name, bytes) = read_first_image(epub, &Settings::default()).expect("EPUB read");
         assert_eq!(name, "OEBPS/images/front.png");
         let img = crate::decode::decode_with_limits(&name, &bytes).expect("decode EPUB cover");
         assert_eq!(img.width(), 2);
@@ -320,7 +321,7 @@ mod tests {
             opf,
             &[("OEBPS/img/cover.png", &png)],
         );
-        let (name, _) = read_first_image(epub).expect("EPUB read");
+        let (name, _) = read_first_image(epub, &Settings::default()).expect("EPUB read");
         assert_eq!(name, "OEBPS/img/cover.png");
     }
 
@@ -339,7 +340,7 @@ mod tests {
             opf,
             &[("OEBPS/page1.png", &png), ("OEBPS/page2.png", &png)],
         );
-        let (name, _) = read_first_image(epub).expect("EPUB read");
+        let (name, _) = read_first_image(epub, &Settings::default()).expect("EPUB read");
         assert!(
             name.ends_with("page1.png"),
             "expected page1.png fallback, got {name}"
@@ -363,7 +364,7 @@ mod tests {
             opf,
             &[("OEBPS/cover.png", &png)],
         );
-        let (name, _) = read_first_image(epub).expect("EPUB read");
+        let (name, _) = read_first_image(epub, &Settings::default()).expect("EPUB read");
         assert!(name.ends_with("cover.png"));
     }
 
@@ -376,7 +377,7 @@ mod tests {
             "<package/>",
             &[("OEBPS/cover.png", &png)],
         );
-        let (name, _) = read_first_image(epub).expect("EPUB read");
+        let (name, _) = read_first_image(epub, &Settings::default()).expect("EPUB read");
         assert!(name.ends_with("cover.png"));
     }
 
@@ -391,7 +392,7 @@ mod tests {
   </manifest>
 </package>"#;
         let epub = build_epub(container, "content.opf", opf, &[("cover.png", &png)]);
-        let (name, _) = read_first_image(epub).expect("EPUB read");
+        let (name, _) = read_first_image(epub, &Settings::default()).expect("EPUB read");
         assert_eq!(name, "cover.png");
     }
 
@@ -401,7 +402,6 @@ mod tests {
 
     #[test]
     fn mask_excludes_disabled_image_extension_from_candidates() {
-        use super::super::read_first_image_with;
         use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings};
 
         let png = make_tiny_png();
@@ -420,7 +420,7 @@ mod tests {
             prefer_cover_names: false,
             ..Settings::default()
         };
-        let (name, _) = read_first_image_with(zip, &settings).expect("jpg disabled");
+        let (name, _) = read_first_image(zip, &settings).expect("jpg disabled");
         assert_eq!(name, "b.png");
 
         // Inverse: disable .png, .jpg should be picked.
@@ -435,13 +435,12 @@ mod tests {
             prefer_cover_names: false,
             ..Settings::default()
         };
-        let (name, _) = read_first_image_with(zip, &settings).expect("png disabled");
+        let (name, _) = read_first_image(zip, &settings).expect("png disabled");
         assert_eq!(name, "a.jpg");
     }
 
     #[test]
     fn mask_of_zero_rejects_all_images_even_in_archive() {
-        use super::super::read_first_image_with;
         use crate::settings::Settings;
 
         let png = make_tiny_png();
@@ -450,7 +449,7 @@ mod tests {
             enabled_image_exts_mask: 0,
             ..Settings::default()
         };
-        let result = read_first_image_with(zip, &settings);
+        let result = read_first_image(zip, &settings);
         assert!(result.is_err(), "zero mask must produce no-image error");
     }
 
@@ -459,7 +458,6 @@ mod tests {
         // For every supported extension, build a zip with only that
         // extension present, configure a mask that enables only that
         // extension, and verify it's picked.
-        use super::super::read_first_image_with;
         use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings};
 
         let body = make_tiny_png();
@@ -471,7 +469,7 @@ mod tests {
                 prefer_cover_names: false,
                 ..Settings::default()
             };
-            let (name, _) = read_first_image_with(zip, &settings)
+            let (name, _) = read_first_image(zip, &settings)
                 .unwrap_or_else(|e| panic!("ext {ext} with solo-enabled mask failed: {e}"));
             assert_eq!(name, entry, "should pick {entry} under solo mask");
         }
@@ -480,7 +478,7 @@ mod tests {
     #[test]
     fn plain_zip_still_works_after_epub_fast_path() {
         let zip = build_zip(&[("page01.jpg", b"AAA"), ("page02.jpg", b"BBB")]);
-        let (name, _) = read_first_image(zip).expect("plain ZIP read");
+        let (name, _) = read_first_image(zip, &Settings::default()).expect("plain ZIP read");
         assert_eq!(name, "page01.jpg");
     }
 }

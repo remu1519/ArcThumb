@@ -126,6 +126,7 @@ fn cleanup_stale_temp_files() {
 #[cfg(test)]
 mod tests {
     use super::super::{read_first_image, tests::make_tiny_png};
+    use crate::settings::Settings;
     use std::io::Cursor;
 
     #[test]
@@ -229,7 +230,8 @@ mod tests {
     fn rar_reads_single_image_entry() {
         let png = make_tiny_png();
         let rar = build_minimal_rar4("01.png", &png);
-        let (name, bytes) = read_first_image(Cursor::new(rar)).expect("RAR read_first_image");
+        let (name, bytes) =
+            read_first_image(Cursor::new(rar), &Settings::default()).expect("RAR read_first_image");
         assert_eq!(name, "01.png");
         let img = crate::decode::decode_with_limits(&name, &bytes).expect("decode RAR entry");
         assert_eq!(img.width(), 2);
@@ -248,7 +250,6 @@ mod tests {
 
     #[test]
     fn rar_mask_of_zero_rejects_all_images() {
-        use super::super::read_first_image_with;
         use crate::settings::Settings;
 
         let png = make_tiny_png();
@@ -257,12 +258,11 @@ mod tests {
             enabled_image_exts_mask: 0,
             ..Settings::default()
         };
-        assert!(read_first_image_with(Cursor::new(rar), &settings).is_err());
+        assert!(read_first_image(Cursor::new(rar), &settings).is_err());
     }
 
     #[test]
     fn rar_every_supported_extension_round_trips_when_enabled_alone() {
-        use super::super::read_first_image_with;
         use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings};
 
         let png = make_tiny_png();
@@ -274,7 +274,7 @@ mod tests {
                 prefer_cover_names: false,
                 ..Settings::default()
             };
-            let (name, _) = read_first_image_with(Cursor::new(rar), &settings)
+            let (name, _) = read_first_image(Cursor::new(rar), &settings)
                 .unwrap_or_else(|e| panic!("rar ext {ext} solo-enabled failed: {e}"));
             assert_eq!(name, entry);
         }
@@ -286,7 +286,6 @@ mod tests {
         // extension, disable ONLY its bit and confirm the RAR entry
         // is rejected. Covers the "exclude by mask" direction that
         // the single-file fixture couldn't express above.
-        use super::super::read_first_image_with;
         use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings, default_enabled_image_exts_mask};
 
         let png = make_tiny_png();
@@ -309,7 +308,7 @@ mod tests {
                 ..Settings::default()
             };
             assert!(
-                read_first_image_with(Cursor::new(rar), &settings).is_err(),
+                read_first_image(Cursor::new(rar), &settings).is_err(),
                 "rar ext {ext} should be rejected when its bit is cleared"
             );
         }

@@ -57,6 +57,7 @@ pub(super) fn tar_read_first_image<R: Read + Seek>(
 #[cfg(test)]
 mod tests {
     use super::super::read_first_image;
+    use crate::settings::Settings;
     use std::io::Cursor;
 
     #[test]
@@ -90,7 +91,7 @@ mod tests {
             ("page1.png", b"ONE"),
             ("notes.txt", b"text"),
         ]);
-        let (name, bytes) = read_first_image(tar).expect("read_first_image");
+        let (name, bytes) = read_first_image(tar, &Settings::default()).expect("read_first_image");
         assert_eq!(name, "page1.png");
         assert_eq!(bytes, b"ONE");
     }
@@ -102,7 +103,7 @@ mod tests {
             ("cover.jpg", b"COVER"),
             ("zzz.jpg", b"Z"),
         ]);
-        let (name, _) = read_first_image(tar).expect("read_first_image");
+        let (name, _) = read_first_image(tar, &Settings::default()).expect("read_first_image");
         assert_eq!(name, "cover.jpg");
     }
 
@@ -112,7 +113,6 @@ mod tests {
 
     #[test]
     fn tar_mask_excludes_disabled_image_extension() {
-        use super::super::read_first_image_with;
         use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings, default_enabled_image_exts_mask};
 
         let jpg_idx = SUPPORTED_IMAGE_EXTS
@@ -125,13 +125,12 @@ mod tests {
             prefer_cover_names: false,
             ..Settings::default()
         };
-        let (name, _) = read_first_image_with(tar, &settings).expect("mask excludes jpg");
+        let (name, _) = read_first_image(tar, &settings).expect("mask excludes jpg");
         assert_eq!(name, "b.png");
     }
 
     #[test]
     fn tar_mask_of_zero_rejects_all_images() {
-        use super::super::read_first_image_with;
         use crate::settings::Settings;
 
         let tar = build_tar(&[("only.png", b"PNG")]);
@@ -139,12 +138,11 @@ mod tests {
             enabled_image_exts_mask: 0,
             ..Settings::default()
         };
-        assert!(read_first_image_with(tar, &settings).is_err());
+        assert!(read_first_image(tar, &settings).is_err());
     }
 
     #[test]
     fn tar_every_supported_extension_round_trips_when_enabled_alone() {
-        use super::super::read_first_image_with;
         use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings};
 
         for (i, ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
@@ -155,7 +153,7 @@ mod tests {
                 prefer_cover_names: false,
                 ..Settings::default()
             };
-            let (name, _) = read_first_image_with(tar, &settings)
+            let (name, _) = read_first_image(tar, &settings)
                 .unwrap_or_else(|e| panic!("tar ext {ext} solo-enabled failed: {e}"));
             assert_eq!(name, entry);
         }

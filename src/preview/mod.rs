@@ -53,7 +53,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{GUID, IUnknown, Interface, PCWSTR, Result, implement, w};
 
-use crate::{alog, archive, decode, stream::ComStreamReader};
+use crate::{alog, archive, decode, settings, stream::ComStreamReader};
 
 use render::CachedBitmap;
 
@@ -288,10 +288,11 @@ impl IPreviewHandler_Impl for ArcThumbPreviewHandler_Impl {
 
             // 2. Reuse the existing decoder pipeline.
             let reader = ComStreamReader::new(stream);
-            let (name, bytes) = archive::read_first_image(reader).map_err(|e| {
-                alog!("Preview: archive read failed: {e}");
-                windows::core::Error::from_hresult(E_FAIL)
-            })?;
+            let (name, bytes) =
+                archive::read_first_image(reader, settings::current()).map_err(|e| {
+                    alog!("Preview: archive read failed: {e}");
+                    windows::core::Error::from_hresult(E_FAIL)
+                })?;
             let img = decode::decode_with_limits(&name, &bytes).map_err(|e| {
                 alog!("Preview: decode failed: {e}");
                 windows::core::Error::from_hresult(E_FAIL)

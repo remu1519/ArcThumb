@@ -197,17 +197,8 @@ pub fn current() -> &'static Settings {
 }
 
 // =============================================================================
-// Image selection: used by every archive backend to turn a list of
-// candidate image filenames into the one we'll decode.
+// Image selection helpers (used by Settings::pick_first_image)
 // =============================================================================
-
-/// Pick the "best" image name using the process-wide cached
-/// settings. Thin wrapper around [`Settings::pick_first_image`]
-/// retained for convenience; prefer the method when you already
-/// have a `Settings` handle.
-pub fn pick_first_image(names: Vec<String>) -> Option<String> {
-    current().pick_first_image(names)
-}
 
 /// Is this path a well-known cover-image filename? Checks the
 /// basename (without extension) against a small allowlist.
@@ -385,12 +376,15 @@ mod tests {
             "zzz.jpg".to_string(),
         ];
         // With default settings (cover priority on), cover wins.
-        assert_eq!(pick_first_image(names), Some("cover.jpg".to_string()));
+        assert_eq!(
+            Settings::default().pick_first_image(names),
+            Some("cover.jpg".to_string())
+        );
     }
 
     #[test]
     fn pick_first_image_empty() {
-        assert_eq!(pick_first_image(vec![]), None);
+        assert_eq!(Settings::default().pick_first_image(vec![]), None);
     }
 
     #[test]
