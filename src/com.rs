@@ -42,8 +42,13 @@ fn try_generate_thumbnail(
     alog!("  picked: {name} ({} bytes)", bytes.len());
 
     // Format-dispatching decoder with pre-decode size guards against
-    // decompression bombs.
-    let img = decode::decode_with_limits(&name, &bytes)?;
+    // decompression bombs. `decode_for_thumbnail` additionally asks
+    // the JPEG decoder to drop to a 1/2, 1/4 or 1/8 DCT scale when
+    // the source is much larger than the requested thumbnail — a
+    // multi-megapixel comic page is delivered at roughly twice the
+    // target size instead of at full resolution, cutting the decode
+    // cost by up to ~16×.
+    let img = decode::decode_for_thumbnail(&name, &bytes, cx)?;
     alog!("  decoded: {}x{}", img.width(), img.height());
 
     // Preserve aspect ratio, fit inside cx × cx. `Triangle` (bilinear)

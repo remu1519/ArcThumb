@@ -62,6 +62,13 @@ mobi = "0.8"
 image = { version = "0.25", default-features = false, features = [
     "jpeg", "png", "gif", "bmp", "tiff", "ico", "webp",
 ] }
+# Direct jpeg-decoder dep to access DCT-scale decoding (1/2, 1/4,
+# 1/8). The image crate's `JpegDecoder` wraps zune-jpeg as of 0.25
+# and no longer exposes `.scale()`, so we call the underlying
+# library ourselves in the thumbnail hot path. Pure Rust, ~50 KB
+# compiled. Only used for large-JPEG sources; other formats skip
+# this decoder entirely.
+jpeg-decoder = "0.3"
 jxl-oxide = { version = "0.11", features = ["image"], optional = true }
 # Slint is the GUI toolkit for the `arcthumb-config` binary. Strings
 # are passed from Rust to the Slint UI via properties for now; the
