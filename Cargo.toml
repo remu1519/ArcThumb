@@ -1,6 +1,6 @@
 [package]
 name = "arcthumb"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Windows Shell Extension that generates Explorer thumbnails and preview-pane previews for comic-book archives (ZIP/CBZ/RAR/CBR/7Z/CB7/CBT) and ebooks (EPUB/FB2/MOBI/AZW/AZW3)."
 license = "MIT OR Apache-2.0"
