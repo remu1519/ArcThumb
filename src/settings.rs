@@ -150,10 +150,15 @@ impl Settings {
     /// Is `name` a candidate image under the current settings?
     /// Combines the compile-time supported set with the user's
     /// `enabled_image_exts_mask`. Case-insensitive.
+    ///
+    /// Hot path: called once per entry while listing archives. The
+    /// earlier implementation allocated a lowercase copy of the whole
+    /// filename on every call; this byte-level comparison avoids the
+    /// allocation entirely and only touches the trailing bytes.
     pub fn accepts_image_ext(&self, name: &str) -> bool {
-        let lower = name.to_ascii_lowercase();
         SUPPORTED_IMAGE_EXTS.iter().enumerate().any(|(i, ext)| {
-            (self.enabled_image_exts_mask & (1u32 << i)) != 0 && lower.ends_with(ext)
+            (self.enabled_image_exts_mask & (1u32 << i)) != 0
+                && ends_with_ignore_ascii_case(name, ext)
         })
     }
 
@@ -194,6 +199,25 @@ impl Settings {
 pub fn current() -> &'static Settings {
     static CACHE: OnceLock<Settings> = OnceLock::new();
     CACHE.get_or_init(Settings::load_from_registry_uncached)
+}
+
+/// Allocation-free case-insensitive suffix check on ASCII bytes.
+///
+/// Only the trailing `suffix.len()` bytes of `s` are compared, so the
+/// cost scales with the extension length (handful of bytes) rather
+/// than the full path length. Non-ASCII bytes in `s` are compared
+/// byte-for-byte — the supported extensions are all ASCII so this
+/// cannot produce a false positive.
+fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
+    let s = s.as_bytes();
+    let sfx = suffix.as_bytes();
+    if s.len() < sfx.len() {
+        return false;
+    }
+    let tail = &s[s.len() - sfx.len()..];
+    tail.iter()
+        .zip(sfx.iter())
+        .all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
 // =============================================================================
@@ -529,6 +553,38 @@ mod tests {
                 SUPPORTED_IMAGE_EXTS[i]
             );
         }
+    }
+
+    #[test]
+    fn ends_with_ignore_ascii_case_matches_case_variants() {
+        assert!(ends_with_ignore_ascii_case("foo.jpg", ".jpg"));
+        assert!(ends_with_ignore_ascii_case("foo.JPG", ".jpg"));
+        assert!(ends_with_ignore_ascii_case("foo.JpG", ".jpg"));
+        assert!(ends_with_ignore_ascii_case("FOO.JPG", ".JPG"));
+    }
+
+    #[test]
+    fn ends_with_ignore_ascii_case_rejects_non_suffix() {
+        assert!(!ends_with_ignore_ascii_case("foo.jpg", ".png"));
+        assert!(!ends_with_ignore_ascii_case("foo", ".jpg"));
+        assert!(!ends_with_ignore_ascii_case("", ".jpg"));
+        // Substring match must not be treated as suffix.
+        assert!(!ends_with_ignore_ascii_case("foo.jpg.txt", ".jpg"));
+    }
+
+    #[test]
+    fn ends_with_ignore_ascii_case_empty_suffix_always_matches() {
+        assert!(ends_with_ignore_ascii_case("anything", ""));
+        assert!(ends_with_ignore_ascii_case("", ""));
+    }
+
+    #[test]
+    fn ends_with_ignore_ascii_case_handles_non_ascii_in_input() {
+        // Non-ASCII bytes in the *input* must not crash. The supported
+        // extensions are ASCII so the comparison boils down to byte-
+        // equality on those trailing bytes.
+        assert!(ends_with_ignore_ascii_case("日本語.jpg", ".jpg"));
+        assert!(!ends_with_ignore_ascii_case("日本語.jpg", ".png"));
     }
 
     #[test]
