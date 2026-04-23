@@ -25,6 +25,7 @@ mod tests {
         read_first_image,
         tests::{build_fb2, make_tiny_png},
     };
+    use crate::settings::Settings;
     use std::io::Cursor;
 
     #[test]
@@ -55,7 +56,8 @@ mod tests {
     fn fb2_raw_extracts_cover() {
         let png = make_tiny_png();
         let fb2 = build_fb2("cover.png", &png);
-        let (name, bytes) = read_first_image(Cursor::new(fb2)).expect("FB2 read");
+        let (name, bytes) =
+            read_first_image(Cursor::new(fb2), &Settings::default()).expect("FB2 read");
         assert_eq!(name, "cover.png");
         let img = crate::decode::decode_with_limits(&name, &bytes).expect("decode FB2 cover");
         assert_eq!(img.width(), 2);
@@ -69,6 +71,6 @@ mod tests {
   <description><title-info><book-title>X</book-title></title-info></description>\n\
   <body><section><p>text only</p></section></body>\n\
 </FictionBook>";
-        assert!(read_first_image(Cursor::new(fb2.to_vec())).is_err());
+        assert!(read_first_image(Cursor::new(fb2.to_vec()), &Settings::default()).is_err());
     }
 }

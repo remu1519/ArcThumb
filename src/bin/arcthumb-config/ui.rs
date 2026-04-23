@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use arcthumb::settings::{Settings, SortOrder};
+use arcthumb::settings::{SUPPORTED_IMAGE_EXTS, Settings, SortOrder};
 use slint::{ComponentHandle, SharedString, Timer};
 
 use crate::apply::{self, RealRegistryOps};
@@ -21,7 +21,7 @@ use crate::dialogs;
 use crate::extension_model::ExtensionModel;
 use crate::locale::{self, Strings};
 use crate::message_box;
-use crate::state::{EXT_COUNT, UiModel};
+use crate::state::{self, EXT_COUNT, UiModel};
 use crate::update;
 use crate::update_check;
 
@@ -38,28 +38,19 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     apply_strings(&window, strings);
 
     let initial_model = UiModel::load();
-    let extensions = ExtensionModel::from_enabled(&initial_model.ext_enabled);
-    window.set_extensions(extensions.as_model());
+    let lists = ExtensionLists::from_model(&initial_model);
+    lists.bind(&window);
     push_model(&window, &initial_model);
     let state = Rc::new(RefCell::new(initial_model));
-
-    // toggle_extension: forward the click to the model so the row
-    // re-emits with the flipped enabled flag.
-    {
-        let extensions = extensions.clone();
-        window.on_toggle_extension(move |i| {
-            extensions.toggle(i as usize);
-        });
-    }
 
     // OK
     {
         let weak = window.as_weak();
         let state = Rc::clone(&state);
-        let extensions = extensions.clone();
+        let lists = lists.clone();
         window.on_ok_clicked(move || {
             if let Some(w) = weak.upgrade()
-                && apply_changes(&w, &state, &extensions, strings)
+                && apply_changes(&w, &state, &lists, strings)
             {
                 let _ = w.hide();
             }
@@ -70,10 +61,10 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     {
         let weak = window.as_weak();
         let state = Rc::clone(&state);
-        let extensions = extensions.clone();
+        let lists = lists.clone();
         window.on_apply_clicked(move || {
             if let Some(w) = weak.upgrade() {
-                let _ = apply_changes(&w, &state, &extensions, strings);
+                let _ = apply_changes(&w, &state, &lists, strings);
             }
         });
     }
@@ -130,6 +121,46 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
 }
 
 // =============================================================================
+// Extension-list bundle
+// =============================================================================
+
+/// Both toggle lists ArcThumb exposes in the GUI: the per-archive
+/// shell registration list and the per-image-format thumbnail
+/// eligibility list. Bundled so `run_gui` doesn't have to clone and
+/// pass two `ExtensionModel`s through every callback.
+#[derive(Clone)]
+struct ExtensionLists {
+    archive: ExtensionModel,
+    image: ExtensionModel,
+}
+
+impl ExtensionLists {
+    fn from_model(m: &UiModel) -> Self {
+        Self {
+            archive: ExtensionModel::from_enabled(&m.ext_enabled),
+            image: ExtensionModel::from_names_and_enabled(
+                SUPPORTED_IMAGE_EXTS,
+                &m.image_ext_enabled,
+            ),
+        }
+    }
+
+    fn bind(&self, window: &MainWindow) {
+        window.set_extensions(self.archive.as_model());
+        window.set_image_extensions(self.image.as_model());
+        let archive = self.archive.clone();
+        window.on_toggle_extension(move |i| archive.toggle(i as usize));
+        let image = self.image.clone();
+        window.on_toggle_image_extension(move |i| image.toggle(i as usize));
+    }
+
+    fn refresh_from(&self, m: &UiModel) {
+        self.archive.replace_enabled(&m.ext_enabled);
+        self.image.replace_enabled(&m.image_ext_enabled);
+    }
+}
+
+// =============================================================================
 // Model ⇄ Slint properties
 // =============================================================================
 
@@ -140,6 +171,7 @@ fn apply_strings(window: &MainWindow, s: &Strings) {
     window.set_menu_help(SharedString::from(s.menu_help));
     window.set_menu_help_about(SharedString::from(s.menu_help_about));
     window.set_group_extensions(SharedString::from(s.group_extensions));
+    window.set_group_image_exts(SharedString::from(s.group_image_exts));
     window.set_group_sort(SharedString::from(s.group_sort));
     window.set_sort_natural_label(SharedString::from(s.sort_natural));
     window.set_sort_alpha_label(SharedString::from(s.sort_alphabetical));
@@ -162,17 +194,19 @@ fn push_model(window: &MainWindow, model: &UiModel) {
 
 fn collect_from_ui(
     window: &MainWindow,
-    extensions: &ExtensionModel,
+    lists: &ExtensionLists,
 ) -> (Settings, [bool; EXT_COUNT], bool) {
-    let ext_enabled = extensions.enabled_array::<EXT_COUNT>();
+    let ext_enabled = lists.archive.enabled_array::<EXT_COUNT>();
     let sort_order = if window.get_sort_natural() {
         SortOrder::Natural
     } else {
         SortOrder::Alphabetical
     };
+    let image_mask = state::image_ext_vec_to_mask(&lists.image.enabled_vec());
     let settings = Settings {
         sort_order,
         prefer_cover_names: window.get_prefer_cover(),
+        enabled_image_exts_mask: image_mask,
     };
     (settings, ext_enabled, window.get_enable_preview())
 }
@@ -184,10 +218,10 @@ fn collect_from_ui(
 fn apply_changes(
     window: &MainWindow,
     state: &Rc<RefCell<UiModel>>,
-    extensions: &ExtensionModel,
+    lists: &ExtensionLists,
     strings: &Strings,
 ) -> bool {
-    let (new_settings, new_ext_enabled, new_preview_enabled) = collect_from_ui(window, extensions);
+    let (new_settings, new_ext_enabled, new_preview_enabled) = collect_from_ui(window, lists);
 
     let plan = apply::compute_apply_plan(
         &state.borrow(),
@@ -222,7 +256,7 @@ fn apply_changes(
 
     let reloaded = UiModel::load();
     push_model(window, &reloaded);
-    extensions.replace_enabled(&reloaded.ext_enabled);
+    lists.refresh_from(&reloaded);
     *state.borrow_mut() = reloaded;
 
     outcome.is_ok()
@@ -280,11 +314,10 @@ mod tests {
         ext[0] = true; // .zip
         ext[2] = true; // .rar
         ext[7] = true; // .epub
+        let settings = Settings::default();
         UiModel {
-            settings: Settings {
-                sort_order: SortOrder::Natural,
-                prefer_cover_names: true,
-            },
+            image_ext_enabled: state::image_ext_mask_to_vec(settings.enabled_image_exts_mask),
+            settings,
             ext_enabled: ext,
             preview_enabled: true,
         }
@@ -298,11 +331,12 @@ mod tests {
         {
             let window = MainWindow::new().expect("create MainWindow");
             let original = baseline_model();
-            let extensions = ExtensionModel::from_enabled(&original.ext_enabled);
-            window.set_extensions(extensions.as_model());
+            let lists = ExtensionLists::from_model(&original);
+            window.set_extensions(lists.archive.as_model());
+            window.set_image_extensions(lists.image.as_model());
 
             push_model(&window, &original);
-            let (settings, ext_enabled, preview) = collect_from_ui(&window, &extensions);
+            let (settings, ext_enabled, preview) = collect_from_ui(&window, &lists);
 
             assert_eq!(settings, original.settings, "settings round-trip");
             assert_eq!(ext_enabled, original.ext_enabled, "ext_enabled round-trip");
@@ -312,19 +346,23 @@ mod tests {
         // ---- push_then_collect_round_trips_alphabetical_no_cover
         {
             let window = MainWindow::new().expect("create MainWindow");
+            let settings = Settings {
+                sort_order: SortOrder::Alphabetical,
+                prefer_cover_names: false,
+                ..Settings::default()
+            };
             let model = UiModel {
-                settings: Settings {
-                    sort_order: SortOrder::Alphabetical,
-                    prefer_cover_names: false,
-                },
+                image_ext_enabled: state::image_ext_mask_to_vec(settings.enabled_image_exts_mask),
+                settings,
                 ext_enabled: [true; EXT_COUNT],
                 preview_enabled: false,
             };
-            let extensions = ExtensionModel::from_enabled(&model.ext_enabled);
-            window.set_extensions(extensions.as_model());
+            let lists = ExtensionLists::from_model(&model);
+            window.set_extensions(lists.archive.as_model());
+            window.set_image_extensions(lists.image.as_model());
 
             push_model(&window, &model);
-            let (settings, ext_enabled, preview) = collect_from_ui(&window, &extensions);
+            let (settings, ext_enabled, preview) = collect_from_ui(&window, &lists);
 
             assert_eq!(settings.sort_order, SortOrder::Alphabetical);
             assert!(!settings.prefer_cover_names);
@@ -333,29 +371,24 @@ mod tests {
         }
 
         // ---- toggle_extension_callback_path_via_extension_model
-        // Confirm that calling `ExtensionModel::toggle` (the same
-        // operation Slint runs from the `toggle_extension` callback)
-        // flips the right slots and that `collect_from_ui` reads
-        // them back in the same index order as
-        // `registry::EXTENSIONS`. Detailed name/index correctness
-        // is covered by `extension_model::tests`; this is the
-        // end-to-end check that the wiring inside `ui.rs` agrees.
         {
             let window = MainWindow::new().expect("create MainWindow");
-            let extensions = ExtensionModel::from_enabled(&[false; EXT_COUNT]);
-            window.set_extensions(extensions.as_model());
-            push_model(
-                &window,
-                &UiModel {
-                    settings: Settings::default(),
-                    ext_enabled: [false; EXT_COUNT],
-                    preview_enabled: false,
-                },
-            );
-            extensions.toggle(5); // .cb7
-            extensions.toggle(11); // .azw3
+            let model = UiModel {
+                settings: Settings::default(),
+                ext_enabled: [false; EXT_COUNT],
+                image_ext_enabled: state::image_ext_mask_to_vec(
+                    Settings::default().enabled_image_exts_mask,
+                ),
+                preview_enabled: false,
+            };
+            let lists = ExtensionLists::from_model(&model);
+            window.set_extensions(lists.archive.as_model());
+            window.set_image_extensions(lists.image.as_model());
+            push_model(&window, &model);
+            lists.archive.toggle(5); // .cb7
+            lists.archive.toggle(11); // .azw3
 
-            let (_, ext, _) = collect_from_ui(&window, &extensions);
+            let (_, ext, _) = collect_from_ui(&window, &lists);
             assert!(ext[5], ".cb7 should be on (index 5)");
             assert!(ext[11], ".azw3 should be on (index 11)");
             for (i, on) in ext.iter().enumerate() {
@@ -413,10 +446,11 @@ mod tests {
         {
             let window = MainWindow::new().expect("create MainWindow");
             let model = baseline_model();
-            let extensions = ExtensionModel::from_enabled(&model.ext_enabled);
-            window.set_extensions(extensions.as_model());
+            let lists = ExtensionLists::from_model(&model);
+            window.set_extensions(lists.archive.as_model());
+            window.set_image_extensions(lists.image.as_model());
             push_model(&window, &model);
-            let (settings, ext_enabled, preview_enabled) = collect_from_ui(&window, &extensions);
+            let (settings, ext_enabled, preview_enabled) = collect_from_ui(&window, &lists);
             let plan = apply::compute_apply_plan(&model, settings, ext_enabled, preview_enabled);
             assert!(
                 plan.is_empty(),

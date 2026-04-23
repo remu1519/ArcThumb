@@ -41,9 +41,9 @@ export component MainWindow inherits Window {
     // below "Enable preview pane" at default size. Larger windows
     // grow that gap because the spacer Rectangle below has
     // `vertical-stretch: 1`; the floor is set by `min-height`.
-    preferred-height: 430px;
+    preferred-height: 520px;
     min-width: 500px;
-    min-height: 410px;
+    min-height: 500px;
 
     // ---- Localized labels (set from Rust at startup) -------------
     in property <string> window_title;
@@ -52,6 +52,7 @@ export component MainWindow inherits Window {
     in property <string> menu_help;
     in property <string> menu_help_about;
     in property <string> group_extensions;
+    in property <string> group_image_exts;
     in property <string> group_sort;
     in property <string> sort_natural_label;
     in property <string> sort_alpha_label;
@@ -67,6 +68,9 @@ export component MainWindow inherits Window {
     // `VecModel<ExtensionEntry>` so the row layout follows
     // `arcthumb::registry::EXTENSIONS` automatically.
     in property <[ExtensionEntry]> extensions;
+    // Image formats eligible as thumbnail sources inside archives.
+    // Parallel to `arcthumb::settings::SUPPORTED_IMAGE_EXTS`.
+    in property <[ExtensionEntry]> image_extensions;
     in-out property <bool> sort_natural;
     in-out property <bool> prefer_cover;
     in-out property <bool> enable_preview;
@@ -82,6 +86,8 @@ export component MainWindow inherits Window {
     // notification only — the Rust side mutates the underlying
     // `VecModel` and Slint re-reads the row.
     callback toggle_extension(int);
+    // Same contract for the image-format toggle list.
+    callback toggle_image_extension(int);
 
     MenuBar {
         Menu {
@@ -133,6 +139,24 @@ export component MainWindow inherits Window {
                     checked: entry.enabled;
                     toggled => {
                         root.toggle_extension(i);
+                    }
+                }
+            }
+        }
+
+        GroupBox {
+            vertical-stretch: 0;
+            title: root.group_image_exts;
+            GridLayout {
+                spacing: 6px;
+                for entry[i] in root.image_extensions: CheckBox {
+                    row: Math.floor(i / 4);
+                    col: Math.mod(i, 4);
+                    vertical-stretch: 0;
+                    text: entry.name;
+                    checked: entry.enabled;
+                    toggled => {
+                        root.toggle_image_extension(i);
                     }
                 }
             }

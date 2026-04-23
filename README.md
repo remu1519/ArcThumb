@@ -38,7 +38,7 @@ ArcThumb is inspired by [CBXShell](https://github.com/T800G/CBXShell) and [DarkT
 
 ### Image formats inside archives
 
-JPEG, PNG, GIF, BMP, TIFF, ICO, and WebP. AVIF, HEIC, and SVG are not supported yet, mostly because their reference decoders pull in heavy C dependencies.
+JPEG, PNG, GIF, BMP, TIFF, ICO, and WebP. Each format can be individually enabled or disabled in the configuration GUI. AVIF, HEIC, and SVG are not supported yet, mostly because their reference decoders pull in heavy C dependencies.
 
 ## Installing
 
@@ -53,6 +53,7 @@ Open **ArcThumb Configuration** from the Start menu.
 ![ArcThumb Configuration dialog with extension toggles, sort order, cover preference and the Regenerate thumbnails button](assets/screenshot.png)
 
 - **Enabled extensions** turns the thumbnail provider on or off per file extension.
+- **Image formats used for thumbnails** chooses which image formats (JPEG, PNG, GIF, BMP, TIFF, WebP, ICO) are eligible when picking a thumbnail from inside an archive. Disabling a format causes ArcThumb to skip files with that extension. This setting does not affect ebooks (EPUB, FB2, MOBI), which use their own metadata to locate the cover.
 - **Sort order** decides which image counts as "the first one" inside an archive. Natural sort treats `page2.jpg` as smaller than `page10.jpg`. Alphabetical does the opposite. Natural is the default and is usually what you want for comics.
 - **Prefer cover / folder / thumb / front** makes ArcThumb look for files named `cover.*`, `folder.*`, `thumb.*`, `thumbnail.*`, or `front.*` before falling back to sort order.
 - **Enable preview pane** is a single switch that registers or unregisters the `IPreviewHandler` for every supported extension at once.

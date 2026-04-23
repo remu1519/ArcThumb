@@ -6,12 +6,12 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use crate::{limits, settings};
-
-use super::has_image_ext;
+use crate::limits;
+use crate::settings::Settings;
 
 pub(super) fn rar_read_first_image<R: Read>(
     mut reader: R,
+    settings: &Settings,
 ) -> Result<(String, Vec<u8>), Box<dyn Error>> {
     // Opportunistic cleanup of orphaned temp files from previous runs
     // where Explorer may have crashed mid-extraction.
@@ -48,14 +48,16 @@ pub(super) fn rar_read_first_image<R: Read>(
                 return None;
             }
             let name = e.filename.to_string_lossy().into_owned();
-            if has_image_ext(&name) {
+            if settings.accepts_image_ext(&name) {
                 Some(name)
             } else {
                 None
             }
         })
         .collect();
-    let target = settings::pick_first_image(candidates).ok_or("archive contains no image files")?;
+    let target = settings
+        .pick_first_image(candidates)
+        .ok_or("archive contains no image files")?;
 
     // Pass 2: walk the archive again with read access, extract the target.
     let mut archive = Archive::new(&temp_path).open_for_processing()?;
@@ -124,6 +126,7 @@ fn cleanup_stale_temp_files() {
 #[cfg(test)]
 mod tests {
     use super::super::{read_first_image, tests::make_tiny_png};
+    use crate::settings::Settings;
     use std::io::Cursor;
 
     #[test]
@@ -227,10 +230,87 @@ mod tests {
     fn rar_reads_single_image_entry() {
         let png = make_tiny_png();
         let rar = build_minimal_rar4("01.png", &png);
-        let (name, bytes) = read_first_image(Cursor::new(rar)).expect("RAR read_first_image");
+        let (name, bytes) =
+            read_first_image(Cursor::new(rar), &Settings::default()).expect("RAR read_first_image");
         assert_eq!(name, "01.png");
         let img = crate::decode::decode_with_limits(&name, &bytes).expect("decode RAR entry");
         assert_eq!(img.width(), 2);
         assert_eq!(img.height(), 2);
+    }
+
+    // ---------------------------------------------------------------
+    // end-to-end: image-extension mask gating
+    //
+    // RAR test fixture only supports single-entry archives, so the
+    // "exclude one of two" variant is covered by zip/tar/7z. Here we
+    // verify the simpler invariants: zero-mask rejects a real image,
+    // and every solo-enabled mask accepts its own extension through
+    // the real RAR-listing path.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rar_mask_of_zero_rejects_all_images() {
+        use crate::settings::Settings;
+
+        let png = make_tiny_png();
+        let rar = build_minimal_rar4("only.png", &png);
+        let settings = Settings {
+            enabled_image_exts_mask: 0,
+            ..Settings::default()
+        };
+        assert!(read_first_image(Cursor::new(rar), &settings).is_err());
+    }
+
+    #[test]
+    fn rar_every_supported_extension_round_trips_when_enabled_alone() {
+        use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings};
+
+        let png = make_tiny_png();
+        for (i, ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
+            let entry = format!("file{ext}");
+            let rar = build_minimal_rar4(&entry, &png);
+            let settings = Settings {
+                enabled_image_exts_mask: 1u32 << i,
+                prefer_cover_names: false,
+                ..Settings::default()
+            };
+            let (name, _) = read_first_image(Cursor::new(rar), &settings)
+                .unwrap_or_else(|e| panic!("rar ext {ext} solo-enabled failed: {e}"));
+            assert_eq!(name, entry);
+        }
+    }
+
+    #[test]
+    fn rar_mask_disabling_target_extension_rejects_entry() {
+        // Complement to the solo-enabled test: for every supported
+        // extension, disable ONLY its bit and confirm the RAR entry
+        // is rejected. Covers the "exclude by mask" direction that
+        // the single-file fixture couldn't express above.
+        use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings, default_enabled_image_exts_mask};
+
+        let png = make_tiny_png();
+        let all = default_enabled_image_exts_mask();
+        for (i, ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
+            // Skip asymmetric suffix overlaps where a sibling bit
+            // still matches this extension via ends_with (e.g.
+            // disabling `.tif` bit still lets the `.tiff` bit catch
+            // `.tif`).
+            let another_matches = SUPPORTED_IMAGE_EXTS.iter().enumerate().any(|(j, e)| {
+                j != i && (all & !(1u32 << i) & (1u32 << j)) != 0 && ext.ends_with(e)
+            });
+            if another_matches {
+                continue;
+            }
+            let entry = format!("file{ext}");
+            let rar = build_minimal_rar4(&entry, &png);
+            let settings = Settings {
+                enabled_image_exts_mask: all & !(1u32 << i),
+                ..Settings::default()
+            };
+            assert!(
+                read_first_image(Cursor::new(rar), &settings).is_err(),
+                "rar ext {ext} should be rejected when its bit is cleared"
+            );
+        }
     }
 }

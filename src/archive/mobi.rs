@@ -18,6 +18,7 @@ pub(super) fn mobi_read_first_image<R: Read + Seek>(
 #[cfg(test)]
 mod tests {
     use super::super::{read_first_image, tests::make_tiny_png};
+    use crate::settings::Settings;
     use std::io::Cursor;
 
     /// Build a 68-byte stub that has the BOOKMOBI signature at the
@@ -192,7 +193,8 @@ mod tests {
     fn mobi_extracts_cover_via_exth_201() {
         let png = make_tiny_png();
         let mobi = build_minimal_mobi(&png);
-        let (name, bytes) = read_first_image(Cursor::new(mobi)).expect("MOBI read");
+        let (name, bytes) =
+            read_first_image(Cursor::new(mobi), &Settings::default()).expect("MOBI read");
         assert_eq!(name, "cover.png");
         let img = crate::decode::decode_with_limits(&name, &bytes).expect("decode MOBI cover");
         assert_eq!(img.width(), 2);
@@ -203,6 +205,6 @@ mod tests {
     fn mobi_garbage_returns_error() {
         let mut bytes = mobi_stub_bytes();
         bytes.extend_from_slice(&[0u8; 256]);
-        assert!(read_first_image(Cursor::new(bytes)).is_err());
+        assert!(read_first_image(Cursor::new(bytes), &Settings::default()).is_err());
     }
 }

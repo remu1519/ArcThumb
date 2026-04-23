@@ -51,7 +51,20 @@ impl ExtensionModel {
             registry::EXTENSIONS.len(),
             "enabled[] length must match registry::EXTENSIONS"
         );
-        let entries: Vec<ExtensionEntry> = registry::EXTENSIONS
+        Self::from_names_and_enabled(registry::EXTENSIONS, enabled)
+    }
+
+    /// Generic constructor for any `(names, enabled)` pair. Used by
+    /// the image-format toggle list, whose names come from
+    /// `settings::SUPPORTED_IMAGE_EXTS` rather than
+    /// `registry::EXTENSIONS`.
+    pub fn from_names_and_enabled(names: &[&'static str], enabled: &[bool]) -> Self {
+        debug_assert_eq!(
+            names.len(),
+            enabled.len(),
+            "names and enabled must have equal length"
+        );
+        let entries: Vec<ExtensionEntry> = names
             .iter()
             .zip(enabled.iter())
             .map(|(&name, &on)| ExtensionEntry {
@@ -62,6 +75,16 @@ impl ExtensionModel {
         Self {
             inner: Rc::new(VecModel::from(entries)),
         }
+    }
+
+    /// Snapshot the current enabled flags as a `Vec<bool>`. The
+    /// variable-length counterpart to `enabled_array::<N>()`, used
+    /// for the image-format list whose length depends on the `jxl`
+    /// feature gate.
+    pub fn enabled_vec(&self) -> Vec<bool> {
+        (0..self.inner.row_count())
+            .map(|i| self.inner.row_data(i).map(|e| e.enabled).unwrap_or(false))
+            .collect()
     }
 
     /// Flip the enabled flag at `index`. Called from the Slint

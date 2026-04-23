@@ -27,7 +27,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::{GUID, IUnknown, Interface, Result, implement};
 
-use crate::{alog, archive, bitmap, decode, limits, stream::ComStreamReader};
+use crate::{alog, archive, bitmap, decode, limits, settings, stream::ComStreamReader};
 
 /// End-to-end: stream → archive → first image bytes → decode → resize → HBITMAP.
 ///
@@ -38,7 +38,7 @@ fn try_generate_thumbnail(
     cx: u32,
 ) -> std::result::Result<HBITMAP, Box<dyn StdError>> {
     let reader = ComStreamReader::new(stream);
-    let (name, bytes) = archive::read_first_image(reader)?;
+    let (name, bytes) = archive::read_first_image(reader, settings::current())?;
     alog!("  picked: {name} ({} bytes)", bytes.len());
 
     // Format-dispatching decoder with pre-decode size guards against
