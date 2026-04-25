@@ -145,3 +145,28 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: false
+
+      # Submit a manifest update PR to microsoft/winget-pkgs so the new
+      # version is reachable via `winget install CitrusSoda.ArcThumb`.
+      # Requires repo secret WINGET_TOKEN (a Classic PAT with `public_repo`
+      # scope). If the secret is missing, the step warns and skips without
+      # failing the release.
+      - name: Submit to winget-pkgs
+        if: steps.gate.outputs.skip == 'false'
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if (-not $env:WINGET_TOKEN) {
+            Write-Warning "WINGET_TOKEN secret not set; skipping winget submission."
+            exit 0
+          }
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          # Give GitHub Releases CDN a moment to propagate the new asset URL
+          # before wingetcreate tries to download it to compute SHA256.
+          Start-Sleep -Seconds 15
+          .\wingetcreate.exe update CitrusSoda.ArcThumb `
+            --version ${{ steps.version.outputs.version }} `
+            --urls "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/ArcThumb-Setup.exe" `
+            --token $env:WINGET_TOKEN `
+            --submit
