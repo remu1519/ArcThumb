@@ -49,7 +49,17 @@ fn main() {
         Some("--install") => std::process::exit(cli_install()),
         Some("--uninstall") => std::process::exit(cli_uninstall()),
         _ => {
-            if ui::run_gui().is_err() {
+            // Surface the failure with a native MessageBox before
+            // exiting. Release builds run as `windows_subsystem =
+            // "windows"`, so without this the user sees nothing —
+            // not even a console line — and reports the binary as
+            // broken. Reported in microsoft/winget-pkgs#364519.
+            if let Err(e) = ui::run_gui() {
+                let strings = locale::current();
+                message_box::error(
+                    strings.error_title,
+                    &format!("{}\n\n{e}", strings.error_gui_init),
+                );
                 std::process::exit(5);
             }
         }

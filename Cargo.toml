@@ -75,7 +75,18 @@ jxl-oxide = { version = "0.11", features = ["image"], optional = true }
 # language is picked at startup from the registry override and OS
 # locale. Switching to `@tr(...)` + gettext is a future refactor
 # tracked in TODO.md.
-slint = { version = "1.15", default-features = true }
+#
+# We pin to the software renderer instead of the default femtovg
+# (OpenGL ES 2.0) so the config dialog still launches on hosts
+# without GPU acceleration — Windows Sandbox, fresh VMs, machines
+# with broken or missing GL drivers. arcthumb-config repaints rarely
+# enough that the CPU renderer is invisible to the user, and it
+# drops femtovg + glutin from the dependency tree.
+slint = { version = "1.15", default-features = false, features = [
+    "backend-winit",
+    "renderer-software",
+    "compat-1-2",
+] }
 # HTTP client for the update checker in arcthumb-config. Blocking API
 # called from a background thread — no async runtime needed. Only
 # referenced from the config binary; LTO strips it from the DLL.
