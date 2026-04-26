@@ -26,7 +26,7 @@
 ; which best-effort cleans both HKCU and HKLM, then removes files.
 
 #define MyAppName       "ArcThumb"
-#define MyAppVersion    "0.6.0"
+#define MyAppVersion    "0.7.0"
 #define MyAppPublisher  "citrussoda-com"
 #define MyAppURL        "https://github.com/citrussoda-com/ArcThumb"
 #define MyAppExeName    "arcthumb-config.exe"
