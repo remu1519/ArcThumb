@@ -7,19 +7,25 @@
 ; Output: target\installer\ArcThumb-Setup.exe
 ;
 ; The installer supports BOTH per-user and per-machine modes via the
-; standard Inno "auto" install mode:
+; standard Inno "auto" install mode. The mode is picked from one of
+; three signals (PrivilegesRequiredOverridesAllowed=dialog commandline):
 ;
-;   - Run normally (no UAC accepted) -> per-user install to
-;     %LOCALAPPDATA%\Programs\ArcThumb, registry under HKCU.
-;   - Run as administrator (or accept UAC) -> per-machine install to
-;     %ProgramFiles%\ArcThumb, registry under HKLM.
-;
-; Per-machine is needed in environments where Explorer runs at High
-; Mandatory Integrity (Windows Sandbox, some enterprise lockdowns)
-; because that Explorer ignores HKCU CLSIDs by Microsoft's design.
+;   - Interactive run, normal: dialog asks; default per-user install
+;     to %LOCALAPPDATA%\Programs\ArcThumb (HKCU).
+;   - Interactive run, "Run as administrator" or accepted UAC: dialog
+;     asks; default per-machine install to %ProgramFiles%\ArcThumb
+;     (HKLM).
+;   - Silent run with /CURRENTUSER -> per-user. Used by `winget install
+;     CitrusSoda.ArcThumb` (Scope: user is the default).
+;   - Silent run with /ALLUSERS    -> per-machine, requires elevation.
+;     Used by `winget install --scope machine`. Required when Explorer
+;     runs at High Mandatory Integrity (Windows Sandbox, some
+;     enterprise lockdowns) because that Explorer ignores HKCU CLSIDs
+;     by Microsoft's design.
 ;
 ; Post-install: silently calls `arcthumb-config.exe --install`. The
-; helper detects its own elevation and writes to the matching hive.
+; helper detects its own elevation and writes to the matching hive,
+; so install dir and registry hive stay aligned in every mode above.
 ; The Finish page offers a checkbox to launch the configuration GUI.
 ;
 ; Pre-uninstall: silently calls `arcthumb-config.exe --uninstall`,
@@ -56,9 +62,11 @@ SolidCompression=yes
 WizardStyle=modern
 ; Default to per-user (no UAC). Users who want per-machine can pick
 ; that mode via the elevation dialog enabled by the next setting,
-; or by right-clicking the installer and "Run as administrator".
+; by right-clicking the installer and "Run as administrator", or by
+; passing /ALLUSERS on the command line. winget uses the command-line
+; switches when invoked with --scope machine.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequiredOverridesAllowed=dialog commandline
 ; 64-bit Explorer needs a 64-bit shell extension DLL.
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -88,7 +96,9 @@ Name: "{autoprograms}\{#MyAppName} Configuration"; Filename: "{app}\{#MyAppExeNa
 Name: "{autoprograms}\Uninstall {#MyAppName}";     Filename: "{uninstallexe}"
 
 [Run]
-; Register the shell extension in HKCU. The DLL was just placed in
+; Register the shell extension. arcthumb-config picks the hive based
+; on its own elevation (HKLM when admin, HKCU otherwise), which
+; matches the install mode chosen above. The DLL was just placed in
 ; {app} so `--install` finds it via `current_exe()`'s neighbour.
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--install"; \
     StatusMsg: "Registering shell extension..."; \

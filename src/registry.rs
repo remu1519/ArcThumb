@@ -197,8 +197,15 @@ fn register_clsid_at(
 }
 
 fn unregister_clsid_at(root: &RegKey, clsid_root: &str) -> io::Result<()> {
-    let _ = root.delete_subkey_all(clsid_root);
-    Ok(())
+    // NotFound is idempotent: the caller asked for the key to be gone
+    // and it already is. Anything else (AccessDenied being the
+    // important case for HKLM from a non-elevated GUI) bubbles up so
+    // Apply can show an error instead of silently lying to the user.
+    match root.delete_subkey_all(clsid_root) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 fn register_extension_at(root: &RegKey, shellex_path: &str, clsid_str: &str) -> io::Result<()> {
@@ -208,8 +215,11 @@ fn register_extension_at(root: &RegKey, shellex_path: &str, clsid_str: &str) -> 
 }
 
 fn unregister_extension_at(root: &RegKey, shellex_path: &str) -> io::Result<()> {
-    let _ = root.delete_subkey_all(shellex_path);
-    Ok(())
+    match root.delete_subkey_all(shellex_path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 fn is_subkey_present(root: &RegKey, path: &str) -> bool {

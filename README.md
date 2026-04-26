@@ -19,7 +19,7 @@ ArcThumb is inspired by [CBXShell](https://github.com/T800G/CBXShell) and [DarkT
 - For ebooks, parses the format-specific metadata so the right cover is picked instead of an arbitrary embedded image. EPUB uses the OPF manifest, FB2 uses the `<coverpage>` reference, and MOBI/AZW/AZW3 use the EXTH 201 CoverOffset record.
 - Implements `IPreviewHandler` so the same cover shows up in Explorer's preview pane (`Alt+P`), rescaled when the splitter moves.
 - Provides a small configuration GUI (`arcthumb-config.exe`) for toggling extensions, sort order, cover-name preference, the preview pane, and the UI language.
-- Installs per-user under `%LOCALAPPDATA%\Programs\ArcThumb`. No admin rights, no system-wide registry changes.
+- Installs per-user under `%LOCALAPPDATA%\Programs\ArcThumb` by default with no admin rights. Run the installer elevated to install machine-wide under `%ProgramFiles%\ArcThumb` instead — required when Explorer runs at high integrity, such as Windows Sandbox.
 - Wraps every COM entry point in `catch_unwind`, so a panic in the decoder cannot crash Explorer or `prevhost.exe`.
 
 ## Supported formats
@@ -42,7 +42,7 @@ JPEG, PNG, GIF, BMP, TIFF, ICO, and WebP. Each format can be individually enable
 
 ## Installing
 
-Download `ArcThumb-Setup.exe` from [Releases](https://github.com/citrussoda-com/ArcThumb/releases) and run it. The installer is per-user, so Windows will not prompt for admin rights. New files get thumbnails immediately. The preview pane is enabled by default; press `Alt+P` in Explorer to open it.
+Download `ArcThumb-Setup.exe` from [Releases](https://github.com/citrussoda-com/ArcThumb/releases) and run it. By default the installer is per-user, so Windows will not prompt for admin rights. Right-click the installer and choose **Run as administrator** (or accept the UAC dialog) to install machine-wide instead — required when Explorer runs at high integrity, such as Windows Sandbox or some enterprise lockdowns. New files get thumbnails immediately. The preview pane is enabled by default; press `Alt+P` in Explorer to open it.
 
 To uninstall, use **Settings → Apps → Installed apps**, find `ArcThumb`, and remove it. Both files and registry entries are cleaned up.
 
@@ -71,8 +71,8 @@ cd ArcThumb
 
 cargo build --release                          # DLL + config GUI
 
-target\release\arcthumb-config.exe --install   # register against HKCU
-target\release\arcthumb-config.exe --uninstall # undo
+target\release\arcthumb-config.exe --install   # register (HKLM if elevated, otherwise HKCU)
+target\release\arcthumb-config.exe --uninstall # undo (cleans both hives best-effort)
 
 iscc installer\arcthumb.iss                    # build the installer
 # output: target\installer\ArcThumb-Setup.exe
@@ -208,10 +208,10 @@ ArcThumb ships two COM classes inside one DLL:
 
 | Class | CLSID | Purpose |
 |---|---|---|
-| `ArcThumbProvider` | `{D9F3C0A4-...}` | `IThumbnailProvider`, hosted in Explorer |
+| `ArcThumbProvider` | `{0F4F5659-...}` | `IThumbnailProvider`, hosted in Explorer |
 | `ArcThumbPreviewHandler` | `{8C7C1E5F-...}` | `IPreviewHandler`, hosted in `prevhost.exe` |
 
-Both register under `HKCU` only, so installing and removing ArcThumb never touches the machine-wide registry.
+By default both register under `HKCU`, so installing and removing ArcThumb never touches the machine-wide registry. Running the installer elevated registers under `HKLM` instead, which is required when Explorer runs at high integrity (Windows Sandbox, some enterprise lockdowns) because that Explorer ignores HKCU CLSIDs by Microsoft's COM-hijacking defence. Uninstall best-effort cleans both hives.
 
 The Inno Setup installer does not write any CLSID keys directly. It runs `arcthumb-config.exe --install` after copying the files, and `--uninstall` before removing them. This keeps the installer ignorant of the COM details and lets developers re-register a fresh build with one CLI command.
 

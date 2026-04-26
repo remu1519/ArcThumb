@@ -162,11 +162,23 @@ impl RegistryOps for RealRegistryOps {
     }
 
     fn disable_preview(&self) -> std::io::Result<()> {
+        // Keep going on per-extension errors so the registry doesn't
+        // end up half-cleaned, but surface the first one to Apply so
+        // the GUI can warn the user (typically AccessDenied when a
+        // non-elevated GUI tries to undo a per-machine install).
+        let mut first_err: Option<std::io::Error> = None;
         for ext in registry::EXTENSIONS {
-            let _ = registry::unregister_preview_extension(self.scope, ext);
+            if let Err(e) = registry::unregister_preview_extension(self.scope, ext) {
+                first_err.get_or_insert(e);
+            }
         }
-        let _ = registry::unregister_preview_clsid(self.scope);
-        Ok(())
+        if let Err(e) = registry::unregister_preview_clsid(self.scope) {
+            first_err.get_or_insert(e);
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     fn notify_assoc_changed(&self) {
