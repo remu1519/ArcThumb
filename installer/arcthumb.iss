@@ -6,15 +6,24 @@
 ;
 ; Output: target\installer\ArcThumb-Setup.exe
 ;
-; The installer is per-user (no admin required) and installs to
-;   %LOCALAPPDATA%\Programs\ArcThumb
+; The installer supports BOTH per-user and per-machine modes via the
+; standard Inno "auto" install mode:
 ;
-; Post-install: silently calls `arcthumb-config.exe --install` to
-; register the shell extension in HKCU. The Finish page offers a
-; checkbox to launch the configuration GUI.
+;   - Run normally (no UAC accepted) -> per-user install to
+;     %LOCALAPPDATA%\Programs\ArcThumb, registry under HKCU.
+;   - Run as administrator (or accept UAC) -> per-machine install to
+;     %ProgramFiles%\ArcThumb, registry under HKLM.
 ;
-; Pre-uninstall: silently calls `arcthumb-config.exe --uninstall`
-; to clean up the registry, then removes the files.
+; Per-machine is needed in environments where Explorer runs at High
+; Mandatory Integrity (Windows Sandbox, some enterprise lockdowns)
+; because that Explorer ignores HKCU CLSIDs by Microsoft's design.
+;
+; Post-install: silently calls `arcthumb-config.exe --install`. The
+; helper detects its own elevation and writes to the matching hive.
+; The Finish page offers a checkbox to launch the configuration GUI.
+;
+; Pre-uninstall: silently calls `arcthumb-config.exe --uninstall`,
+; which best-effort cleans both HKCU and HKLM, then removes files.
 
 #define MyAppName       "ArcThumb"
 #define MyAppVersion    "0.6.0"
@@ -32,7 +41,11 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
-DefaultDirName={localappdata}\Programs\{#MyAppName}
+; {autopf} resolves to %ProgramFiles% for admin installs and
+; %LocalAppData%\Programs for per-user installs (Inno Setup 6 auto
+; install mode). The choice is made by PrivilegesRequired below plus
+; the elevation dialog from PrivilegesRequiredOverridesAllowed.
+DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE-MIT
@@ -41,7 +54,9 @@ OutputBaseFilename=ArcThumb-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-; HKCU only — no UAC prompt.
+; Default to per-user (no UAC). Users who want per-machine can pick
+; that mode via the elevation dialog enabled by the next setting,
+; or by right-clicking the installer and "Run as administrator".
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ; 64-bit Explorer needs a 64-bit shell extension DLL.

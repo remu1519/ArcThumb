@@ -11,6 +11,7 @@ mod bitmap;
 mod com;
 mod decode;
 mod ebook;
+pub mod elevation;
 mod limits;
 mod log;
 mod preview;

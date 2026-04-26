@@ -2,7 +2,8 @@
 //! the registry at startup and after every Apply so the UI stays
 //! in sync with the actual registry state.
 
-use arcthumb::registry;
+use arcthumb::elevation;
+use arcthumb::registry::{self, Scope};
 use arcthumb::settings::{SUPPORTED_IMAGE_EXTS, Settings};
 
 /// Number of extensions ArcThumb can manage. Derived directly from
@@ -16,6 +17,12 @@ pub const EXT_COUNT: usize = registry::EXTENSIONS.len();
 #[derive(Debug, Clone)]
 pub struct UiModel {
     pub settings: Settings,
+    /// Which hive the GUI is currently editing. Picked from the live
+    /// install at load time (HKLM wins when both are present), or from
+    /// the current process's elevation when nothing is yet installed.
+    /// All Apply mutations target this scope so we don't shadow a
+    /// machine install with a user install.
+    pub scope: Scope,
     /// Parallel to `registry::EXTENSIONS`. `true` = this extension's
     /// ShellEx key is currently present in the registry.
     pub ext_enabled: [bool; EXT_COUNT],
@@ -25,21 +32,28 @@ pub struct UiModel {
     /// GUI edits this `Vec`, `collect_from_ui` folds it back into
     /// the bitmask on Apply.
     pub image_ext_enabled: Vec<bool>,
-    /// `true` iff the preview-handler CLSID is currently registered.
-    /// When the user toggles this, ApplyChanges (un)registers the
-    /// CLSID and binds/unbinds *all* extensions in one batch.
+    /// `true` iff the preview-handler CLSID is currently registered
+    /// in the active scope. When the user toggles this, ApplyChanges
+    /// (un)registers the CLSID and binds/unbinds *all* extensions in
+    /// one batch.
     pub preview_enabled: bool,
 }
 
 impl UiModel {
     pub fn load() -> Self {
         let settings = Settings::load_from_registry_uncached();
-        let ext_enabled: [bool; EXT_COUNT] =
-            std::array::from_fn(|i| registry::is_extension_registered(registry::EXTENSIONS[i]));
+        // Prefer whichever hive the shell extension currently lives in;
+        // fall back to the current process's elevation when nothing is
+        // installed yet (rare — the installer always registers first).
+        let scope = registry::detect_installed_scope().unwrap_or_else(elevation::current_scope);
+        let ext_enabled: [bool; EXT_COUNT] = std::array::from_fn(|i| {
+            registry::is_extension_registered(scope, registry::EXTENSIONS[i])
+        });
         let image_ext_enabled = image_ext_mask_to_vec(settings.enabled_image_exts_mask);
-        let preview_enabled = registry::is_preview_enabled();
+        let preview_enabled = registry::is_preview_enabled(scope);
         Self {
             settings,
+            scope,
             ext_enabled,
             image_ext_enabled,
             preview_enabled,

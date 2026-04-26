@@ -229,7 +229,9 @@ fn apply_changes(
         new_ext_enabled,
         new_preview_enabled,
     );
-    let outcome = apply::apply_plan(&plan, &RealRegistryOps);
+    // Mutate whichever hive the loaded model came from, so an Apply
+    // on a per-machine install doesn't silently bifurcate into HKCU.
+    let outcome = apply::apply_plan(&plan, &RealRegistryOps::new(state.borrow().scope));
 
     if let Some(detail) = &outcome.settings_save_error {
         message_box::error(
@@ -318,6 +320,7 @@ mod tests {
         UiModel {
             image_ext_enabled: state::image_ext_mask_to_vec(settings.enabled_image_exts_mask),
             settings,
+            scope: arcthumb::registry::Scope::PerUser,
             ext_enabled: ext,
             preview_enabled: true,
         }
@@ -354,6 +357,7 @@ mod tests {
             let model = UiModel {
                 image_ext_enabled: state::image_ext_mask_to_vec(settings.enabled_image_exts_mask),
                 settings,
+                scope: arcthumb::registry::Scope::PerUser,
                 ext_enabled: [true; EXT_COUNT],
                 preview_enabled: false,
             };
@@ -375,6 +379,7 @@ mod tests {
             let window = MainWindow::new().expect("create MainWindow");
             let model = UiModel {
                 settings: Settings::default(),
+                scope: arcthumb::registry::Scope::PerUser,
                 ext_enabled: [false; EXT_COUNT],
                 image_ext_enabled: state::image_ext_mask_to_vec(
                     Settings::default().enabled_image_exts_mask,

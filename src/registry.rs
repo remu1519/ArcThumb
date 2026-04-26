@@ -1,19 +1,30 @@
 //! Install / uninstall the shell extension into the Windows registry.
 //!
-//! We write to `HKCU\Software\Classes` rather than `HKLM` so that the
-//! DLL can be registered without admin rights. This also means the
-//! thumbnail provider is per-user.
+//! ArcThumb supports two install scopes:
+//!
+//! * [`Scope::PerUser`] writes to `HKCU\Software\Classes`. No admin
+//!   rights required, registration is per-user. Default for the
+//!   non-elevated installer path.
+//! * [`Scope::PerMachine`] writes to `HKLM\Software\Classes`. Requires
+//!   admin rights. Required when Explorer runs at High Mandatory
+//!   Integrity (Windows Sandbox, some enterprise lockdowns), because
+//!   Microsoft's COM-hijacking defence makes that Explorer ignore HKCU
+//!   CLSID entries entirely.
+//!
+//! The path layout under each hive's `Software\Classes` subtree is
+//! identical, so all the path builders are scope-agnostic — only the
+//! root key changes.
 //!
 //! Registry layout after a successful full install:
 //!
 //! ```text
-//! HKCU\Software\Classes\CLSID\{CLSID_ARCTHUMB}
+//! HK??\Software\Classes\CLSID\{CLSID_ARCTHUMB}
 //!     (Default)                = "ArcThumb Thumbnail Provider"
 //!     InprocServer32\
 //!         (Default)            = "C:\path\to\arcthumb.dll"
 //!         ThreadingModel       = "Apartment"
 //!
-//! HKCU\Software\Classes\.zip\ShellEx\{IID_IThumbnailProvider}
+//! HK??\Software\Classes\.zip\ShellEx\{IID_IThumbnailProvider}
 //!     (Default)                = "{CLSID_ARCTHUMB}"
 //! ```
 //!
@@ -21,10 +32,11 @@
 //!
 //! Both the DLL's `DllRegisterServer` and the separate `arcthumb-config`
 //! binary share this module. The DLL uses `register()` / `unregister()`
-//! which auto-detect their own path via `GetModuleHandleExW`. The config
-//! exe uses the individual primitives (`register_clsid(path)`,
-//! `register_extension(ext)`, `is_extension_registered(ext)`, …) so it
-//! can install selectively and reflect current state in the GUI.
+//! which auto-detect their own path via `GetModuleHandleExW` and pick a
+//! scope from the current process's elevation. The config exe uses the
+//! individual primitives (`register_clsid(scope, path)`,
+//! `register_extension(scope, ext)`, `is_extension_registered(scope, ext)`,
+//! …) so it can install selectively and reflect current state in the GUI.
 
 use std::ffi::OsString;
 use std::io;
@@ -39,6 +51,8 @@ use windows::Win32::System::LibraryLoader::{
 use windows::core::PCWSTR;
 use winreg::RegKey;
 use winreg::enums::*;
+
+use crate::elevation;
 
 // =============================================================================
 // Constants
@@ -76,6 +90,35 @@ const CLASSES_BASE: &str = "Software\\Classes";
 
 /// Production parent key for COM CLSIDs.
 const CLSID_BASE: &str = "Software\\Classes\\CLSID";
+
+// =============================================================================
+// Scope — per-user vs per-machine install hive selection
+// =============================================================================
+
+/// Which registry hive to read or write.
+///
+/// `PerUser` targets `HKCU\Software\Classes` and works without admin
+/// rights. `PerMachine` targets `HKLM\Software\Classes` and requires
+/// elevation; chosen automatically when the installer runs as admin.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Scope {
+    PerUser,
+    PerMachine,
+}
+
+impl Scope {
+    /// Both hives, in the order to **try for reads** (machine first
+    /// since HKLM-installed entries take precedence at COM lookup time
+    /// for elevated callers).
+    pub const ALL: &'static [Scope] = &[Scope::PerMachine, Scope::PerUser];
+
+    fn root_key(self) -> RegKey {
+        match self {
+            Scope::PerUser => RegKey::predef(HKEY_CURRENT_USER),
+            Scope::PerMachine => RegKey::predef(HKEY_LOCAL_MACHINE),
+        }
+    }
+}
 
 // =============================================================================
 // HandlerKind — captures the difference between thumbnail and preview
@@ -130,12 +173,16 @@ impl HandlerKind {
 }
 
 // =============================================================================
-// Registry primitives (parameterized for testability)
+// Registry primitives (parameterized by scope + sub-path for testability)
 // =============================================================================
 
-fn register_clsid_at(clsid_root: &str, dll_path: &Path, handler: &HandlerKind) -> io::Result<()> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let (clsid_key, _) = hkcu.create_subkey(clsid_root)?;
+fn register_clsid_at(
+    root: &RegKey,
+    clsid_root: &str,
+    dll_path: &Path,
+    handler: &HandlerKind,
+) -> io::Result<()> {
+    let (clsid_key, _) = root.create_subkey(clsid_root)?;
     clsid_key.set_value("", &handler.display_name)?;
 
     if let Some(app_id) = handler.app_id {
@@ -149,33 +196,28 @@ fn register_clsid_at(clsid_root: &str, dll_path: &Path, handler: &HandlerKind) -
     Ok(())
 }
 
-fn unregister_clsid_at(clsid_root: &str) -> io::Result<()> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let _ = hkcu.delete_subkey_all(clsid_root);
+fn unregister_clsid_at(root: &RegKey, clsid_root: &str) -> io::Result<()> {
+    let _ = root.delete_subkey_all(clsid_root);
     Ok(())
 }
 
-fn register_extension_at(shellex_path: &str, clsid_str: &str) -> io::Result<()> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let (key, _) = hkcu.create_subkey(shellex_path)?;
+fn register_extension_at(root: &RegKey, shellex_path: &str, clsid_str: &str) -> io::Result<()> {
+    let (key, _) = root.create_subkey(shellex_path)?;
     key.set_value("", &clsid_str.to_string())?;
     Ok(())
 }
 
-fn unregister_extension_at(shellex_path: &str) -> io::Result<()> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let _ = hkcu.delete_subkey_all(shellex_path);
+fn unregister_extension_at(root: &RegKey, shellex_path: &str) -> io::Result<()> {
+    let _ = root.delete_subkey_all(shellex_path);
     Ok(())
 }
 
-fn is_subkey_present(path: &str) -> bool {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    hkcu.open_subkey(path).is_ok()
+fn is_subkey_present(root: &RegKey, path: &str) -> bool {
+    root.open_subkey(path).is_ok()
 }
 
-fn read_inproc_default(clsid_root: &str) -> Option<PathBuf> {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let key = hkcu
+fn read_inproc_default(root: &RegKey, clsid_root: &str) -> Option<PathBuf> {
+    let key = root
         .open_subkey(format!("{clsid_root}\\InprocServer32"))
         .ok()?;
     let path: String = key.get_value("").ok()?;
@@ -214,45 +256,64 @@ fn get_dll_path_from_module() -> io::Result<String> {
 // Public API — thumbnail provider
 // =============================================================================
 
-/// Write the CLSID subtree (`HKCU\Software\Classes\CLSID\{CLSID}`)
+/// Write the CLSID subtree (`HK??\Software\Classes\CLSID\{CLSID}`)
 /// including the `InprocServer32` entry pointing at `dll_path`.
-pub fn register_clsid(dll_path: &Path) -> io::Result<()> {
-    register_clsid_at(&THUMBNAIL.clsid_root(), dll_path, &THUMBNAIL)
+pub fn register_clsid(scope: Scope, dll_path: &Path) -> io::Result<()> {
+    register_clsid_at(
+        &scope.root_key(),
+        &THUMBNAIL.clsid_root(),
+        dll_path,
+        &THUMBNAIL,
+    )
 }
 
 /// Delete the CLSID subtree. Best effort: succeeds even if the tree
 /// was already absent.
-pub fn unregister_clsid() -> io::Result<()> {
-    unregister_clsid_at(&THUMBNAIL.clsid_root())
+pub fn unregister_clsid(scope: Scope) -> io::Result<()> {
+    unregister_clsid_at(&scope.root_key(), &THUMBNAIL.clsid_root())
 }
 
 /// Wire a single file extension to our CLSID in the ShellEx slot.
 /// `ext` must start with a dot, e.g. `".zip"`.
-pub fn register_extension(ext: &str) -> io::Result<()> {
-    register_extension_at(&THUMBNAIL.ext_shellex_path(ext), CLSID_STR)
+pub fn register_extension(scope: Scope, ext: &str) -> io::Result<()> {
+    register_extension_at(
+        &scope.root_key(),
+        &THUMBNAIL.ext_shellex_path(ext),
+        CLSID_STR,
+    )
 }
 
 /// Remove the ShellEx binding for a single extension. No error if
 /// the key is already gone.
-pub fn unregister_extension(ext: &str) -> io::Result<()> {
-    unregister_extension_at(&THUMBNAIL.ext_shellex_path(ext))
+pub fn unregister_extension(scope: Scope, ext: &str) -> io::Result<()> {
+    unregister_extension_at(&scope.root_key(), &THUMBNAIL.ext_shellex_path(ext))
 }
 
-/// True iff the ShellEx IID subkey currently exists for this extension.
-pub fn is_extension_registered(ext: &str) -> bool {
-    is_subkey_present(&THUMBNAIL.ext_shellex_path(ext))
+/// True iff the ShellEx IID subkey currently exists for this extension
+/// in the given scope.
+pub fn is_extension_registered(scope: Scope, ext: &str) -> bool {
+    is_subkey_present(&scope.root_key(), &THUMBNAIL.ext_shellex_path(ext))
 }
 
-/// True iff the CLSID's `InprocServer32` subkey exists (our canonical
-/// "shell extension is installed" signal).
-pub fn is_clsid_registered() -> bool {
-    is_subkey_present(&format!("{}\\InprocServer32", THUMBNAIL.clsid_root()))
+/// True iff the CLSID's `InprocServer32` subkey exists in the given
+/// scope (our canonical "shell extension is installed" signal).
+pub fn is_clsid_registered(scope: Scope) -> bool {
+    is_subkey_present(
+        &scope.root_key(),
+        &format!("{}\\InprocServer32", THUMBNAIL.clsid_root()),
+    )
 }
 
-/// Read back `HKCU\Software\Classes\CLSID\{CLSID}\InprocServer32\(Default)`.
+/// Read back `HK??\Software\Classes\CLSID\{CLSID}\InprocServer32\(Default)`.
+/// Tries each scope in `scopes` in order and returns the first hit.
 /// Used by the config exe as a fallback when the DLL isn't next to it.
-pub fn read_registered_dll_path() -> Option<PathBuf> {
-    read_inproc_default(&THUMBNAIL.clsid_root())
+pub fn read_registered_dll_path(scopes: &[Scope]) -> Option<PathBuf> {
+    for scope in scopes {
+        if let Some(p) = read_inproc_default(&scope.root_key(), &THUMBNAIL.clsid_root()) {
+            return Some(p);
+        }
+    }
+    None
 }
 
 // =============================================================================
@@ -261,56 +322,79 @@ pub fn read_registered_dll_path() -> Option<PathBuf> {
 
 /// Write the preview-handler CLSID subtree, including the AppID
 /// pointing at prevhost.exe and the InprocServer32 entry.
-pub fn register_preview_clsid(dll_path: &Path) -> io::Result<()> {
-    register_clsid_at(&PREVIEW.clsid_root(), dll_path, &PREVIEW)
+pub fn register_preview_clsid(scope: Scope, dll_path: &Path) -> io::Result<()> {
+    register_clsid_at(&scope.root_key(), &PREVIEW.clsid_root(), dll_path, &PREVIEW)
 }
 
 /// Delete the preview-handler CLSID subtree. Best effort.
-pub fn unregister_preview_clsid() -> io::Result<()> {
-    unregister_clsid_at(&PREVIEW.clsid_root())
+pub fn unregister_preview_clsid(scope: Scope) -> io::Result<()> {
+    unregister_clsid_at(&scope.root_key(), &PREVIEW.clsid_root())
 }
 
 /// Wire one extension to the preview-handler CLSID via its
 /// `IPreviewHandler` ShellEx slot.
-pub fn register_preview_extension(ext: &str) -> io::Result<()> {
-    register_extension_at(&PREVIEW.ext_shellex_path(ext), PREVIEW_CLSID_STR)
+pub fn register_preview_extension(scope: Scope, ext: &str) -> io::Result<()> {
+    register_extension_at(
+        &scope.root_key(),
+        &PREVIEW.ext_shellex_path(ext),
+        PREVIEW_CLSID_STR,
+    )
 }
 
 /// Remove the preview-handler ShellEx binding for an extension.
-pub fn unregister_preview_extension(ext: &str) -> io::Result<()> {
-    unregister_extension_at(&PREVIEW.ext_shellex_path(ext))
+pub fn unregister_preview_extension(scope: Scope, ext: &str) -> io::Result<()> {
+    unregister_extension_at(&scope.root_key(), &PREVIEW.ext_shellex_path(ext))
 }
 
-/// True iff the preview-handler `InprocServer32` subkey exists. Used
-/// as the source of truth for the GUI's "Enable preview pane" toggle.
-pub fn is_preview_enabled() -> bool {
-    is_subkey_present(&format!("{}\\InprocServer32", PREVIEW.clsid_root()))
+/// True iff the preview-handler `InprocServer32` subkey exists in the
+/// given scope. Used as the source of truth for the GUI's
+/// "Enable preview pane" toggle.
+pub fn is_preview_enabled(scope: Scope) -> bool {
+    is_subkey_present(
+        &scope.root_key(),
+        &format!("{}\\InprocServer32", PREVIEW.clsid_root()),
+    )
+}
+
+/// Pick the first scope (in `Scope::ALL` order) where the thumbnail
+/// CLSID is registered. Used by the GUI to decide which hive's state
+/// to display when both could in theory be present.
+pub fn detect_installed_scope() -> Option<Scope> {
+    Scope::ALL.iter().copied().find(|&s| is_clsid_registered(s))
 }
 
 // =============================================================================
 // Backward-compatible wrappers used by DllRegisterServer / DllUnregisterServer
 // =============================================================================
 
+/// Register the DLL into whichever hive matches the current process's
+/// elevation: HKLM when admin, HKCU otherwise. Called by `regsvr32`.
 pub fn register() -> io::Result<()> {
+    let scope = elevation::current_scope();
     let dll_path_str = get_dll_path_from_module()?;
     let dll_path = Path::new(&dll_path_str);
-    register_clsid(dll_path)?;
-    register_preview_clsid(dll_path)?;
+    register_clsid(scope, dll_path)?;
+    register_preview_clsid(scope, dll_path)?;
     for ext in EXTENSIONS {
-        register_extension(ext)?;
-        register_preview_extension(ext)?;
+        register_extension(scope, ext)?;
+        register_preview_extension(scope, ext)?;
     }
     notify_assoc_changed();
     Ok(())
 }
 
+/// Unregister from BOTH hives best-effort. We can't always tell which
+/// one was used at install time (and a user may have switched modes
+/// between versions), so we always try to clean both.
 pub fn unregister() -> io::Result<()> {
-    for ext in EXTENSIONS {
-        let _ = unregister_extension(ext);
-        let _ = unregister_preview_extension(ext);
+    for scope in Scope::ALL.iter().copied() {
+        for ext in EXTENSIONS {
+            let _ = unregister_extension(scope, ext);
+            let _ = unregister_preview_extension(scope, ext);
+        }
+        let _ = unregister_clsid(scope);
+        let _ = unregister_preview_clsid(scope);
     }
-    let _ = unregister_clsid();
-    let _ = unregister_preview_clsid();
     notify_assoc_changed();
     Ok(())
 }
@@ -393,8 +477,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn scope_per_user_root_is_hkcu() {
+        // RegKey doesn't expose its predef HIVE; assert by writing a
+        // throwaway key under each scope and reading back via the
+        // matching predef.
+        let sandbox = unique_sandbox("scope_per_user_root");
+        let _guard = SandboxGuard(sandbox.clone());
+        let path = format!("{sandbox}\\probe");
+
+        Scope::PerUser
+            .root_key()
+            .create_subkey(&path)
+            .expect("create under HKCU");
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        assert!(hkcu.open_subkey(&path).is_ok(), "PerUser must hit HKCU");
+    }
+
+    #[test]
+    fn scope_all_lists_machine_before_user() {
+        // Order matters: read fallbacks must prefer HKLM (admin
+        // installs win at COM lookup time for elevated callers).
+        assert_eq!(Scope::ALL, &[Scope::PerMachine, Scope::PerUser]);
+    }
+
     // ---------------------------------------------------------------
-    // Hermetic registry roundtrips
+    // Hermetic registry roundtrips (HKCU only — HKLM needs admin)
     // ---------------------------------------------------------------
 
     fn unique_sandbox(tag: &str) -> String {
@@ -415,24 +524,27 @@ mod tests {
         }
     }
 
+    fn hkcu() -> RegKey {
+        Scope::PerUser.root_key()
+    }
+
     #[test]
     fn extension_register_roundtrip() {
         let sandbox = unique_sandbox("ext");
         let _guard = SandboxGuard(sandbox.clone());
         let path = ext_shellex_path_under(&sandbox, ".zip", THUMBNAIL.iid_shellex);
 
-        assert!(!is_subkey_present(&path));
+        assert!(!is_subkey_present(&hkcu(), &path));
 
-        register_extension_at(&path, CLSID_STR).expect("register");
-        assert!(is_subkey_present(&path));
+        register_extension_at(&hkcu(), &path, CLSID_STR).expect("register");
+        assert!(is_subkey_present(&hkcu(), &path));
 
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let key = hkcu.open_subkey(&path).expect("open after register");
+        let key = hkcu().open_subkey(&path).expect("open after register");
         let val: String = key.get_value("").expect("read default value");
         assert_eq!(val, CLSID_STR);
 
-        unregister_extension_at(&path).expect("unregister");
-        assert!(!is_subkey_present(&path));
+        unregister_extension_at(&hkcu(), &path).expect("unregister");
+        assert!(!is_subkey_present(&hkcu(), &path));
     }
 
     #[test]
@@ -441,33 +553,31 @@ mod tests {
         let _guard = SandboxGuard(sandbox.clone());
         let clsid_root = format!("{sandbox}\\{{TEST-CLSID}}");
 
-        assert!(!is_subkey_present(&clsid_root));
+        assert!(!is_subkey_present(&hkcu(), &clsid_root));
 
         let dll_path = std::path::PathBuf::from(r"C:\fake\arcthumb.dll");
-        register_clsid_at(&clsid_root, &dll_path, &THUMBNAIL).expect("register");
+        register_clsid_at(&hkcu(), &clsid_root, &dll_path, &THUMBNAIL).expect("register");
 
         let inproc_path = format!("{clsid_root}\\InprocServer32");
-        assert!(is_subkey_present(&inproc_path));
+        assert!(is_subkey_present(&hkcu(), &inproc_path));
 
-        let read_back = read_inproc_default(&clsid_root).expect("read back");
+        let read_back = read_inproc_default(&hkcu(), &clsid_root).expect("read back");
         assert_eq!(read_back, dll_path);
 
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let inproc = hkcu.open_subkey(&inproc_path).expect("open inproc");
+        let inproc = hkcu().open_subkey(&inproc_path).expect("open inproc");
         let threading: String = inproc
             .get_value("ThreadingModel")
             .expect("read ThreadingModel");
         assert_eq!(threading, "Apartment");
 
-        // Thumbnail handler has no AppID.
-        let clsid_key = hkcu.open_subkey(&clsid_root).expect("open clsid");
+        let clsid_key = hkcu().open_subkey(&clsid_root).expect("open clsid");
         assert!(
             clsid_key.get_value::<String, _>("AppID").is_err(),
             "thumbnail should not have AppID"
         );
 
-        unregister_clsid_at(&clsid_root).expect("unregister");
-        assert!(!is_subkey_present(&clsid_root));
+        unregister_clsid_at(&hkcu(), &clsid_root).expect("unregister");
+        assert!(!is_subkey_present(&hkcu(), &clsid_root));
     }
 
     #[test]
@@ -476,16 +586,15 @@ mod tests {
         let _guard = SandboxGuard(sandbox.clone());
         let clsid_root = format!("{sandbox}\\{{TEST-PREVIEW}}");
 
-        assert!(!is_subkey_present(&clsid_root));
+        assert!(!is_subkey_present(&hkcu(), &clsid_root));
 
         let dll_path = std::path::PathBuf::from(r"C:\fake\arcthumb.dll");
-        register_clsid_at(&clsid_root, &dll_path, &PREVIEW).expect("register");
+        register_clsid_at(&hkcu(), &clsid_root, &dll_path, &PREVIEW).expect("register");
 
-        let read_back = read_inproc_default(&clsid_root).expect("read back");
+        let read_back = read_inproc_default(&hkcu(), &clsid_root).expect("read back");
         assert_eq!(read_back, dll_path);
 
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let inproc = hkcu
+        let inproc = hkcu()
             .open_subkey(format!("{clsid_root}\\InprocServer32"))
             .expect("open inproc");
         let threading: String = inproc
@@ -493,13 +602,12 @@ mod tests {
             .expect("read ThreadingModel");
         assert_eq!(threading, "Apartment");
 
-        // Preview handler has AppID pointing at prevhost.exe.
-        let clsid_key = hkcu.open_subkey(&clsid_root).expect("open clsid");
+        let clsid_key = hkcu().open_subkey(&clsid_root).expect("open clsid");
         let app_id: String = clsid_key.get_value("AppID").expect("read AppID");
         assert_eq!(app_id, PREVHOST_APPID);
 
-        unregister_clsid_at(&clsid_root).expect("unregister");
-        assert!(!is_subkey_present(&clsid_root));
+        unregister_clsid_at(&hkcu(), &clsid_root).expect("unregister");
+        assert!(!is_subkey_present(&hkcu(), &clsid_root));
     }
 
     #[test]
@@ -507,7 +615,7 @@ mod tests {
         let sandbox = unique_sandbox("missing_ext");
         let _guard = SandboxGuard(sandbox.clone());
         let path = ext_shellex_path_under(&sandbox, ".doesnotexist", THUMBNAIL.iid_shellex);
-        unregister_extension_at(&path).expect("noop unregister");
+        unregister_extension_at(&hkcu(), &path).expect("noop unregister");
     }
 
     #[test]
@@ -515,7 +623,7 @@ mod tests {
         let sandbox = unique_sandbox("missing_clsid");
         let _guard = SandboxGuard(sandbox.clone());
         let clsid_root = format!("{sandbox}\\{{NOPE}}");
-        unregister_clsid_at(&clsid_root).expect("noop unregister");
+        unregister_clsid_at(&hkcu(), &clsid_root).expect("noop unregister");
     }
 
     #[test]
@@ -523,7 +631,7 @@ mod tests {
         let sandbox = unique_sandbox("read_missing");
         let _guard = SandboxGuard(sandbox.clone());
         let clsid_root = format!("{sandbox}\\{{ABSENT}}");
-        assert!(read_inproc_default(&clsid_root).is_none());
+        assert!(read_inproc_default(&hkcu(), &clsid_root).is_none());
     }
 
     #[test]
@@ -533,24 +641,27 @@ mod tests {
 
         for handler in [&THUMBNAIL, &PREVIEW] {
             let clsid_root = clsid_root_path_under(&sandbox, handler.clsid_str);
-            register_clsid_at(&clsid_root, Path::new(r"C:\fake.dll"), handler)
+            register_clsid_at(&hkcu(), &clsid_root, Path::new(r"C:\fake.dll"), handler)
                 .expect("clsid register");
 
             for ext in EXTENSIONS {
                 let path = ext_shellex_path_under(&sandbox, ext, handler.iid_shellex);
-                register_extension_at(&path, handler.clsid_str).expect(ext);
-                assert!(is_subkey_present(&path), "{ext} not present after register");
+                register_extension_at(&hkcu(), &path, handler.clsid_str).expect(ext);
+                assert!(
+                    is_subkey_present(&hkcu(), &path),
+                    "{ext} not present after register"
+                );
             }
 
             for ext in EXTENSIONS {
                 let path = ext_shellex_path_under(&sandbox, ext, handler.iid_shellex);
-                unregister_extension_at(&path).expect(ext);
+                unregister_extension_at(&hkcu(), &path).expect(ext);
                 assert!(
-                    !is_subkey_present(&path),
+                    !is_subkey_present(&hkcu(), &path),
                     "{ext} still present after unregister"
                 );
             }
-            unregister_clsid_at(&clsid_root).expect("clsid unregister");
+            unregister_clsid_at(&hkcu(), &clsid_root).expect("clsid unregister");
         }
     }
 
@@ -560,17 +671,16 @@ mod tests {
         let _guard = SandboxGuard(sandbox.clone());
         let path = ext_shellex_path_under(&sandbox, ".epub", PREVIEW.iid_shellex);
 
-        assert!(!is_subkey_present(&path));
+        assert!(!is_subkey_present(&hkcu(), &path));
 
-        register_extension_at(&path, PREVIEW_CLSID_STR).expect("register");
-        assert!(is_subkey_present(&path));
+        register_extension_at(&hkcu(), &path, PREVIEW_CLSID_STR).expect("register");
+        assert!(is_subkey_present(&hkcu(), &path));
 
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let key = hkcu.open_subkey(&path).expect("open after register");
+        let key = hkcu().open_subkey(&path).expect("open after register");
         let val: String = key.get_value("").expect("read default");
         assert_eq!(val, PREVIEW_CLSID_STR);
 
-        unregister_extension_at(&path).expect("unregister");
-        assert!(!is_subkey_present(&path));
+        unregister_extension_at(&hkcu(), &path).expect("unregister");
+        assert!(!is_subkey_present(&hkcu(), &path));
     }
 }

@@ -2,20 +2,22 @@
 //!
 //! Lookup order:
 //! 1. Next to the current executable (the expected deployment layout).
-//! 2. The path in `HKCU\Software\Classes\CLSID\{CLSID}\InprocServer32\(Default)`
-//!    — useful if the user previously installed via `regsvr32` from a
-//!    different location.
-//! 3. Otherwise: `Err` with a message the UI shows to the user.
+//! 2. The path in `HKLM\Software\Classes\CLSID\{CLSID}\InprocServer32\(Default)`
+//!    (per-machine install).
+//! 3. The path in `HKCU\...` for the same key (per-user install). HKLM
+//!    wins when both exist because that matches COM's lookup order
+//!    under elevated callers.
+//! 4. Otherwise: `Err` with a message the UI shows to the user.
 
 use std::path::PathBuf;
 
-use arcthumb::registry;
+use arcthumb::registry::{self, Scope};
 
 pub fn resolve_dll_path() -> Result<PathBuf, String> {
     if let Some(p) = exe_neighbour_dll().filter(|p| p.is_file()) {
         return Ok(p);
     }
-    if let Some(p) = registry::read_registered_dll_path().filter(|p| p.is_file()) {
+    if let Some(p) = registry::read_registered_dll_path(Scope::ALL).filter(|p| p.is_file()) {
         return Ok(p);
     }
     Err("arcthumb.dll not found next to the exe or in the registry".into())

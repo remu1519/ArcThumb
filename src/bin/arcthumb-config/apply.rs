@@ -22,7 +22,7 @@
 //! Now the diff logic is a 30-line pure function, the side-effect
 //! layer is a six-method trait, and both have their own test suites.
 
-use arcthumb::registry;
+use arcthumb::registry::{self, Scope};
 use arcthumb::settings::Settings;
 
 use crate::dll_path;
@@ -120,37 +120,52 @@ pub trait RegistryOps {
     fn notify_assoc_changed(&self);
 }
 
-/// Production implementation that talks directly to `HKCU` via the
-/// `arcthumb::registry` module.
-pub struct RealRegistryOps;
+/// Production implementation that talks to whichever hive the GUI was
+/// loaded from, via the `arcthumb::registry` module.
+///
+/// The scope is determined at construction by looking at where the
+/// shell extension is currently registered (HKLM wins if both), so the
+/// GUI edits the live install rather than spawning a stale per-user
+/// install next to a per-machine one.
+pub struct RealRegistryOps {
+    scope: Scope,
+}
+
+impl RealRegistryOps {
+    pub fn new(scope: Scope) -> Self {
+        Self { scope }
+    }
+}
 
 impl RegistryOps for RealRegistryOps {
     fn save_settings(&self, settings: &Settings) -> std::io::Result<()> {
+        // Settings stay in HKCU regardless of install scope: a
+        // machine-wide install still has per-user UI preferences.
         settings.save_to_registry()
     }
 
     fn register_extension(&self, ext: &'static str) -> std::io::Result<()> {
-        registry::register_extension(ext)
+        registry::register_extension(self.scope, ext)
     }
 
     fn unregister_extension(&self, ext: &'static str) -> std::io::Result<()> {
-        registry::unregister_extension(ext)
+        registry::unregister_extension(self.scope, ext)
     }
 
     fn enable_preview(&self) -> std::io::Result<()> {
         let dll = dll_path::resolve_dll_path().map_err(std::io::Error::other)?;
-        registry::register_preview_clsid(&dll)?;
+        registry::register_preview_clsid(self.scope, &dll)?;
         for ext in registry::EXTENSIONS {
-            registry::register_preview_extension(ext)?;
+            registry::register_preview_extension(self.scope, ext)?;
         }
         Ok(())
     }
 
     fn disable_preview(&self) -> std::io::Result<()> {
         for ext in registry::EXTENSIONS {
-            let _ = registry::unregister_preview_extension(ext);
+            let _ = registry::unregister_preview_extension(self.scope, ext);
         }
-        let _ = registry::unregister_preview_clsid();
+        let _ = registry::unregister_preview_clsid(self.scope);
         Ok(())
     }
 
@@ -238,6 +253,7 @@ mod tests {
                 settings.enabled_image_exts_mask,
             ),
             settings,
+            scope: Scope::PerUser,
             ext_enabled: ext,
             preview_enabled: false,
         }
