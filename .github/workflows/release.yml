@@ -165,8 +165,15 @@ jobs:
           # Give GitHub Releases CDN a moment to propagate the new asset URL
           # before wingetcreate tries to download it to compute SHA256.
           Start-Sleep -Seconds 15
+          # The base manifest has two installer entries (Scope: user with
+          # /CURRENTUSER, Scope: machine with /ALLUSERS) that point at the
+          # same exe. wingetcreate update requires --urls to be supplied
+          # once per existing installer entry in declaration order, so
+          # we pass the same URL twice. Adding a third installer entry
+          # later means adding a third --urls argument here.
+          $url = "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/ArcThumb-Setup.exe"
           .\wingetcreate.exe update CitrusSoda.ArcThumb `
             --version ${{ steps.version.outputs.version }} `
-            --urls "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/ArcThumb-Setup.exe" `
+            --urls $url $url `
             --token $env:WINGET_TOKEN `
             --submit
