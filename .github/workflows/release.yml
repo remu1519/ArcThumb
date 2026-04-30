@@ -167,13 +167,16 @@ jobs:
           Start-Sleep -Seconds 15
           # The base manifest has two installer entries (Scope: user with
           # /CURRENTUSER, Scope: machine with /ALLUSERS) that point at the
-          # same exe. wingetcreate update requires --urls to be supplied
-          # once per existing installer entry in declaration order, so
-          # we pass the same URL twice. Adding a third installer entry
-          # later means adding a third --urls argument here.
+          # same exe. Both match on architecture + installer type, so we
+          # have to disambiguate them with the wingetcreate URL override
+          # syntax `<url>|<architecture>|<scope>`. Without the scope
+          # override wingetcreate fails with "Multiple matches found".
+          # Adding a third installer entry later means adding a third
+          # --urls argument with its own scope override.
           $url = "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/ArcThumb-Setup.exe"
           .\wingetcreate.exe update CitrusSoda.ArcThumb `
             --version ${{ steps.version.outputs.version }} `
-            --urls $url $url `
+            --display-version ${{ steps.version.outputs.version }} `
+            --urls "$url|x64|user" "$url|x64|machine" `
             --token $env:WINGET_TOKEN `
             --submit
